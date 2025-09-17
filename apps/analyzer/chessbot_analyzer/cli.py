@@ -5,9 +5,12 @@ import json
 from pathlib import Path
 from typing import Optional
 from .config import settings
-from .timeline import TimelineBuilder
+from .timeline import Timeline, TimelineBuilder
 from .scripting import ScriptGenerator
 from .utils.logging import setup_logging, get_logger
+from .pgn_ingest import GameIngestor, ensure_tables
+from .selectors import GameSelector
+from .analysis_cache import AnalysisCacheWriter
 
 app = typer.Typer()
 logger = get_logger(__name__)
@@ -15,36 +18,40 @@ logger = get_logger(__name__)
 
 @app.command()
 def ingest(
-    source: str = typer.Option(..., help="Data source: lichess, chesscom, twic, manual"),
-    path: str = typer.Option(..., help="Path to PGN file or data source"),
-    output_dir: str = typer.Option("./outputs", help="Output directory")
+    path: str = typer.Option(..., help="Path to PGN file, directory, or URL"),
+    source: str = typer.Option("manual", help="Data source: manual, lichess, chesscom, twic"),
 ):
-    """Ingest games from various sources into database."""
-    logger.info(f"Ingesting games from {source}: {path}")
-    
-    # TODO: Implement actual ingestion
-    # For now, just create output directory
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    
-    typer.echo(f"Games ingested from {source} to {output_dir}")
+    """Ingest games into the database with deduplication (supports .pgn and .zst)."""
+    logger.info(f"Ingesting games from source={source}, path={path}")
+
+    ensure_tables()
+    ingestor = GameIngestor()
+
+    if path.startswith("http://") or path.startswith("https://"):
+        result = ingestor.ingest_url(path, source=source)
+    else:
+        result = ingestor.ingest_path(path, source=source)
+
+    typer.echo(json.dumps(result))
 
 
 @app.command()
 def select(
-    strategy: str = typer.Option("anniversary-or-topscore", help="Selection strategy"),
-    output_file: str = typer.Option("game_id.txt", help="Output file for selected game ID")
+    strategy: str = typer.Option("anniversary-or-topscore", help="Strategy: anniversary-or-topscore"),
+    output_file: str = typer.Option("game_id.txt", help="Optional file to write selected game ID")
 ):
-    """Select today's game for analysis."""
+    """Select today's game (anniversary preferred, fallback to top score)."""
     logger.info(f"Selecting game with strategy: {strategy}")
-    
-    # TODO: Implement actual game selection
-    # For now, return a sample game ID
-    game_id = 123
-    
-    with open(output_file, 'w') as f:
-        f.write(str(game_id))
-    
-    typer.echo(f"Selected game ID: {game_id}")
+
+    ensure_tables()
+    selector = GameSelector()
+    game_id = selector.pick_today()
+
+    if output_file:
+        with open(output_file, 'w') as f:
+            f.write(str(game_id))
+
+    typer.echo(str(game_id))
 
 
 @app.command()
@@ -183,6 +190,26 @@ def config():
     typer.echo(f"Alt preview plies: {settings.ALT_PREVIEW_PLIES}")
     typer.echo(f"Max scene duration: {settings.MAX_SCENE_DURATION_MS}ms")
 
+
+@app.command("analyse-cache")
+def analyse_cache(
+    game_id: int = typer.Argument(..., help="Game ID from the 'games' table"),
+    depth: Optional[int] = typer.Option(None, help="Engine depth (overrides config)"),
+    multipv: Optional[int] = typer.Option(None, help="MultiPV (overrides config)"),
+    truncate: bool = typer.Option(True, help="Delete existing cache rows for this game first"),
+    max_plies: Optional[int] = typer.Option(None, help="Stop after this many plies (debug)"),
+):
+    """Run Stockfish and persist per-ply analysis to analysis_cache."""
+    ensure_tables()
+    writer = AnalysisCacheWriter()
+    n = writer.analyze_and_store(
+        game_id,
+        depth=depth,
+        multipv=multipv,
+        truncate_existing=truncate,
+        max_plies=max_plies,
+    )
+    typer.echo(f"Wrote {n} plies to analysis_cache for game {game_id}")
 
 if __name__ == "__main__":
     setup_logging()

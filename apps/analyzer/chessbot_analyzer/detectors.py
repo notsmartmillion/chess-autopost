@@ -1,200 +1,183 @@
-"""Feature detection for chess positions: pins, attacks, move tags."""
+# chessbot_analyzer/detectors.py
+from __future__ import annotations
 
+import typing as t
 import chess
-from typing import List, Dict, Any, Optional, Tuple
-from .utils.logging import get_logger
 
-logger = get_logger(__name__)
+
+def _sign(x: int) -> int:
+    return (x > 0) - (x < 0)
+
+
+def _square_step(start: int, df: int, dr: int) -> int | None:
+    """
+    Step one square from `start` by file delta df and rank delta dr.
+    Returns new square or None if off-board.
+    """
+    f = chess.square_file(start) + df
+    r = chess.square_rank(start) + dr
+    if 0 <= f <= 7 and 0 <= r <= 7:
+        return chess.square(f, r)
+    return None
+
+
+def _unit_direction(a: int, b: int) -> tuple[int, int] | None:
+    """
+    If a->b are aligned on a rook or bishop ray, return unit step (df, dr).
+    Else return None.
+    """
+    df = chess.square_file(b) - chess.square_file(a)
+    dr = chess.square_rank(b) - chess.square_rank(a)
+    if df == 0 and dr == 0:
+        return None
+    # rook directions
+    if df == 0:
+        return (0, _sign(dr))
+    if dr == 0:
+        return (_sign(df), 0)
+    # bishop directions
+    if abs(df) == abs(dr):
+        return (_sign(df), _sign(dr))
+    return None
+
+
+def _first_piece_along(board: chess.Board, start: int, df: int, dr: int) -> int | None:
+    """
+    From `start`, walk in step (df,dr) until a piece is found or board edge.
+    Returns that square or None if none found.
+    """
+    sq = start
+    while True:
+        sq = _square_step(sq, df, dr)
+        if sq is None:
+            return None
+        if board.piece_at(sq):
+            return sq
+
+
+def _is_valid_pin_attacker(piece: chess.Piece, df: int, dr: int) -> bool:
+    """
+    Given the direction from king -> pinned piece, determine what attacker type is valid
+    (rook/queen for orthogonal; bishop/queen for diagonal).
+    We don't check color here; just sliding type suitability.
+    """
+    if df == 0 or dr == 0:
+        # rook/queen
+        return piece.piece_type in (chess.ROOK, chess.QUEEN)
+    # diagonal
+    return piece.piece_type in (chess.BISHOP, chess.QUEEN)
+
+
+def _ray_squares_exclusive(board: chess.Board, attacker: int, king: int) -> list[str]:
+    """
+    Squares strictly between attacker and king, moving from the attacker towards the king.
+    (Used to draw a neat path; you'll typically include these plus the king.)
+    """
+    step = _unit_direction(attacker, king)
+    if step is None:
+        return []
+    df, dr = step
+    cur = attacker
+    ray: list[str] = []
+    while True:
+        cur = _square_step(cur, df, dr)
+        if cur is None or cur == king:
+            break
+        ray.append(chess.square_name(cur))
+    return ray
 
 
 class FeatureDetectors:
-    """Static methods for detecting chess position features."""
-    
     @staticmethod
-    def compute_pins(board: chess.Board) -> List[Dict[str, Any]]:
+    def compute_pins(board: chess.Board) -> list[dict[str, t.Any]]:
         """
-        Compute all pins in the position.
-        
-        Args:
-            board: Chess position
-            
-        Returns:
-            List of pin dictionaries with keys: sq, ray, attacker, king
+        Return full pin descriptors for the side to move *and* the opponent:
+          [
+            {
+              "sq": "e3",                # pinned piece square
+              "attacker": "c5",          # enemy sliding piece delivering the pin
+              "king": "g1",              # king of the pinned piece
+              "ray": ["d4","e3","f2","g1"]  # path from just in front of attacker to the king (inclusive of pin+king, exclusive of attacker)
+            },
+            ...
+          ]
+        Notes:
+        - We rely on board.is_pinned(color, sq) to find pinned pieces.
+        - Then we walk *away from the king* to locate the first enemy sliding piece on that line.
         """
-        pins = []
-        
-        # Check pins for both colors
-        for color in [chess.WHITE, chess.BLACK]:
-            king_square = board.king(color)
-            if king_square is None:
+        pins: list[dict[str, t.Any]] = []
+
+        for color in (chess.WHITE, chess.BLACK):
+            king_sq = board.king(color)
+            if king_sq is None:
                 continue
-                
-            # Check each square for pins
-            for square in chess.SQUARES:
-                piece = board.piece_at(square)
-                if piece is None or piece.color != color:
+
+            # Scan all own pieces; identify ones flagged as pinned by python-chess.
+            for sq in chess.SQUARES:
+                piece = board.piece_at(sq)
+                if not piece or piece.color != color:
                     continue
-                    
-                if board.is_pinned(color, square):
-                    # Find the pinning piece and ray
-                    pinner, ray = FeatureDetectors._find_pin_details(board, square, king_square, color)
-                    if pinner is not None:
-                        pins.append({
-                            "sq": chess.square_name(square),
-                            "ray": [chess.square_name(sq) for sq in ray],
-                            "attacker": chess.square_name(pinner),
-                            "king": chess.square_name(king_square),
-                            "color": "white" if color else "black"
-                        })
-        
-        logger.debug(f"Found {len(pins)} pins in position")
-        return pins
-    
-    @staticmethod
-    def attacked_squares(board: chess.Board) -> Dict[str, List[str]]:
-        """
-        Compute all attacked squares by each color.
-        
-        Args:
-            board: Chess position
-            
-        Returns:
-            Dict with 'white' and 'black' keys containing lists of attacked squares
-        """
-        attacked = {"white": [], "black": []}
-        
-        for color in [chess.WHITE, chess.BLACK]:
-            color_name = "white" if color else "black"
-            
-            for square in chess.SQUARES:
-                if board.is_attacked_by(color, square):
-                    attacked[color_name].append(chess.square_name(square))
-        
-        logger.debug(f"Attacked squares - White: {len(attacked['white'])}, Black: {len(attacked['black'])}")
-        return attacked
-    
-    @staticmethod
-    def tag_move(eval_before: int, eval_after: int) -> Optional[str]:
-        """
-        Tag a move based on evaluation change.
-        
-        Args:
-            eval_before: Centipawn evaluation before move
-            eval_after: Centipawn evaluation after move
-            
-        Returns:
-            Move tag or None
-        """
-        eval_diff = eval_after - eval_before
-        
-        # Blunder thresholds (in centipawns)
-        if abs(eval_diff) >= 300:  # 3 pawns
-            return "blunder"
-        elif abs(eval_diff) >= 200:  # 2 pawns
-            return "mistake"
-        elif abs(eval_diff) >= 100:  # 1 pawn
-            return "inaccuracy"
-        elif abs(eval_diff) >= 50:  # 0.5 pawns
-            return "good"
-        elif abs(eval_diff) >= 200 and eval_diff > 0:  # Large improvement
-            return "brilliant"
-        elif abs(eval_diff) >= 100 and eval_diff > 0:  # Good improvement
-            return "excellent"
-        
-        return None
-    
-    @staticmethod
-    def _find_pin_details(board: chess.Board, pinned_square: int, king_square: int, color: bool) -> Tuple[Optional[int], List[int]]:
-        """
-        Find the pinning piece and the ray between pinned piece and king.
-        
-        Args:
-            board: Chess position
-            pinned_square: Square of pinned piece
-            king_square: Square of king
-            pinned_color: Color of pinned piece
-            
-        Returns:
-            Tuple of (pinning_square, ray_squares)
-        """
-        # Get direction from king to pinned piece
-        king_file, king_rank = chess.square_file(king_square), chess.square_rank(king_square)
-        pinned_file, pinned_rank = chess.square_file(pinned_square), chess.square_rank(pinned_square)
-        
-        file_diff = pinned_file - king_file
-        rank_diff = pinned_rank - king_rank
-        
-        # Normalize direction
-        if file_diff != 0:
-            file_diff = file_diff // abs(file_diff)
-        if rank_diff != 0:
-            rank_diff = rank_diff // abs(rank_diff)
-        
-        # Search along the ray for the pinning piece
-        ray = []
-        current_file, current_rank = king_file + file_diff, king_rank + rank_diff
-        
-        while 0 <= current_file <= 7 and 0 <= current_rank <= 7:
-            current_square = chess.square(current_file, current_rank)
-            ray.append(current_square)
-            
-            piece = board.piece_at(current_square)
-            if piece is not None:
-                # Found a piece
-                if piece.color != color:
-                    # This is the pinning piece
-                    return current_square, ray
+                if not board.is_pinned(color, sq):
+                    continue
+
+                # Determine the unit direction from king -> pinned piece.
+                step = _unit_direction(king_sq, sq)
+                if step is None:
+                    # Shouldn't happen for a true pin, but be defensive.
+                    pins.append({"sq": chess.square_name(sq), "king": chess.square_name(king_sq)})
+                    continue
+                df, dr = step
+
+                # Search from the pinned piece outward *away from the king* to find the attacker.
+                attacker_sq = _first_piece_along(board, sq, df, dr)
+                if attacker_sq is None:
+                    pins.append({"sq": chess.square_name(sq), "king": chess.square_name(king_sq)})
+                    continue
+
+                attacker_piece = board.piece_at(attacker_sq)
+                if (
+                    attacker_piece
+                    and attacker_piece.color != color
+                    and _is_valid_pin_attacker(attacker_piece, df, dr)
+                ):
+                    # Build ray from attacker towards the king (exclusive of attacker, inclusive through king).
+                    ray_between = _ray_squares_exclusive(board, attacker_sq, king_sq)
+                    # Ensure the pinned square and king are included (renderer expects them).
+                    if chess.square_name(sq) not in ray_between:
+                        # Insert it in the correct place if python-chess returned a weird alignment (very unlikely)
+                        # By construction, the pinned square lies on this ray.
+                        pass
+                    ray_full = ray_between + [chess.square_name(king_sq)]
+
+                    pins.append(
+                        {
+                            "sq": chess.square_name(sq),
+                            "attacker": chess.square_name(attacker_sq),
+                            "king": chess.square_name(king_sq),
+                            "ray": ray_full,
+                        }
+                    )
                 else:
-                    # This is another piece of the same color, not a pin
-                    return None, []
-            
-            current_file += file_diff
-            current_rank += rank_diff
-        
-        return None, ray
-    
+                    # Fallback minimal info if something is off.
+                    pins.append({"sq": chess.square_name(sq), "king": chess.square_name(king_sq)})
+
+        return pins
+
     @staticmethod
-    def detect_sacrifices(board: chess.Board, move: chess.Move, eval_before: int, eval_after: int) -> Optional[str]:
+    def attacked_squares(board: chess.Board) -> dict[str, list[str]]:
         """
-        Detect if a move is a sacrifice based on material and evaluation.
-        
-        Args:
-            board: Position before move
-            move: The move played
-            eval_before: Evaluation before move
-            eval_after: Evaluation after move
-            
-        Returns:
-            Sacrifice type or None
+        Squares currently attacked by each side, as algebraic strings.
+        Useful for heatmaps/overlays.
         """
-        # Get piece values
-        piece_values = {
-            chess.PAWN: 100,
-            chess.KNIGHT: 320,
-            chess.BISHOP: 330,
-            chess.ROOK: 500,
-            chess.QUEEN: 900,
-            chess.KING: 20000
+        return {
+            "white": [
+                chess.square_name(s)
+                for s in chess.SQUARES
+                if board.is_attacked_by(chess.WHITE, s)
+            ],
+            "black": [
+                chess.square_name(s)
+                for s in chess.SQUARES
+                if board.is_attacked_by(chess.BLACK, s)
+            ],
         }
-        
-        moved_piece = board.piece_at(move.from_square)
-        captured_piece = board.piece_at(move.to_square)
-        
-        if moved_piece is None:
-            return None
-        
-        # Calculate material change
-        material_lost = piece_values.get(moved_piece.piece_type, 0)
-        material_gained = piece_values.get(captured_piece.piece_type, 0) if captured_piece else 0
-        net_material = material_gained - material_lost
-        
-        # Check if it's a sacrifice (losing material but gaining positionally)
-        if net_material < -100 and eval_after > eval_before + 200:
-            if net_material <= -500:  # Queen or Rook sacrifice
-                return "queen_sacrifice" if net_material <= -800 else "rook_sacrifice"
-            elif net_material <= -300:  # Minor piece sacrifice
-                return "minor_sacrifice"
-            else:  # Pawn sacrifice
-                return "pawn_sacrifice"
-        
-        return None

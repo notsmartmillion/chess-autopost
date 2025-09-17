@@ -1,0 +1,14 @@
+{
+  "name": "chess-renderer",
+  "private": true,
+  "scripts": {
+    "build": "tsc --noEmit",
+    "render:video": "remotion render src/compositions/Video.tsx out/video.mp4",
+    "render:thumb": "remotion still src/compositions/Thumbnail.tsx out/thumb.png"
+  },
+  "devDependencies": {
+    "typescript": "^5",
+    "@remotion/cli": "^4"
+  }
+}
+

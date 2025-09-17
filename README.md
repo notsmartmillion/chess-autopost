@@ -58,8 +58,8 @@ chess-autopost/
 
 ### Prerequisites
 
-- Python 3.8+ with virtual environment
-- Node.js 16+ and npm
+- Python 3.10+ with virtual environment
+- Node.js 18+ (or 20) and npm
 - PostgreSQL database
 - Stockfish engine binary
 - ElevenLabs API key
@@ -67,18 +67,24 @@ chess-autopost/
 
 ### Installation
 
-1. **Clone and setup Python environment:**
+1. **Create a root virtual environment and install the analyzer (editable):**
 ```bash
-cd chess-autopost/apps/analyzer
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
+# from repo root
+python -m venv .venv
+source .venv/bin/activate    # Windows: .\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+pip install -e ./apps/analyzer[dev]
 ```
 
 2. **Setup TypeScript renderer:**
 ```bash
 cd chess-autopost/apps/renderer
 npm install
+# Type-check
+npx tsc --noEmit
+# Optional: render video/thumbnail via scripts
+npm run render:video
+npm run render:thumb
 ```
 
 3. **Configure environment:**
@@ -122,6 +128,23 @@ voice align --lines outputs/lines.json --audio-dir audio/ --output alignment.jso
 6. **Render video:**
 ```bash
 renderer render --timeline outputs/timeline.json --audio-dir audio/
+```
+
+### Quick commands
+
+```bash
+# Ingest → Select → Analyze + Script
+chessbot ingest --source lichess --path games.pgn
+chessbot select --strategy anniversary-or-topscore
+chessbot pipeline --game-id 123 --output-dir ./outputs
+
+# Voice (generate + align)
+voice synth --lines ./outputs/lines.json --voice-id $VOICE_ID --out ./outputs/audio/
+voice align --lines ./outputs/lines.json --audio-dir ./outputs/audio/ --output ./outputs/alignment.json
+
+# Render (via Remotion scripts, optional)
+cd apps/renderer
+npm run render:video
 ```
 
 7. **Upload to YouTube:**
@@ -288,7 +311,7 @@ uploader update --video-id VIDEO_ID --title "New Title"
 
 ```bash
 # Database
-DATABASE_URL=postgresql+psycopg2://user:pass@host:5432/chessbot
+DB_URL=postgresql+psycopg2://user:pass@host:5432/chessbot
 
 # ElevenLabs TTS
 ELEVENLABS_API_KEY=your_api_key
@@ -449,7 +472,7 @@ curl -X POST $SLACK_WEBHOOK_URL -d '{"text":"Daily chess video uploaded successf
 4. **Database connection issues**
    ```bash
    # Test connection
-   psql $DATABASE_URL -c "SELECT 1;"
+   psql $DB_URL -c "SELECT 1;"
    ```
 
 ### **Debug Mode**

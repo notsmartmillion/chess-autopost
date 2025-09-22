@@ -1,259 +1,227 @@
-"""
-PGN ingestion utilities.
-
-- Supports local .pgn files, directories of PGNs, and .zst-compressed PGNs (Lichess dumps).
-- Computes a stable moves_hash to deduplicate games.
-- Creates minimal tables (games, analysis_cache, media) if they don't exist.
-"""
+"""PGN ingestion: download & store games from Lichess and Chess.com."""
 
 from __future__ import annotations
 
 import hashlib
 import io
-import os
-import pathlib
-import typing as t
+import json
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, List, Optional, Tuple
 
 import chess.pgn
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.exc import IntegrityError
-
-try:
-    import zstandard as zstd  # for .zst dumps
-except Exception:  # pragma: no cover
-    zstd = None  # optional
-
-
-try:
-    import requests  # for URL ingestion
-except Exception:  # pragma: no cover
-    requests = None
+import requests
 
 from .config import settings
+from .utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+# Where we place downloaded PGNs
+PGN_DIR = Path(settings.OUTPUT_DIR).parent / "storage" / "pgns"
+PGN_DIR.mkdir(parents=True, exist_ok=True)
 
 
-DDL_GAMES = """
-CREATE TABLE IF NOT EXISTS games (
-  id BIGSERIAL PRIMARY KEY,
-  source TEXT NOT NULL,
-  event  TEXT,
-  site   TEXT,
-  date   DATE,
-  white  TEXT,
-  black  TEXT,
-  result TEXT,
-  eco    TEXT,
-  ply_count INT,
-  pgn    TEXT NOT NULL,
-  moves_hash TEXT UNIQUE
-);
-"""
+# ------------------------------- utilities -------------------------------- #
 
-DDL_ANALYSIS_CACHE = """
-CREATE TABLE IF NOT EXISTS analysis_cache (
-  id BIGSERIAL PRIMARY KEY,
-  game_id BIGINT REFERENCES games(id),
-  ply INT,
-  fen TEXT,
-  multipv_json JSONB,
-  pins_json JSONB,
-  attacks_json JSONB,
-  best_move TEXT,
-  alt_moves JSONB,
-  eval_cp INT,
-  tag TEXT
-);
-"""
-
-DDL_MEDIA = """
-CREATE TABLE IF NOT EXISTS media (
-  id BIGSERIAL PRIMARY KEY,
-  game_id BIGINT REFERENCES games(id),
-  video_path TEXT,
-  thumb_path TEXT,
-  youtube_id TEXT,
-  status TEXT,
-  published_at TIMESTAMPTZ
-);
-"""
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
-def _engine() -> Engine:
-    return create_engine(settings.DB_URL)
+def _safe_filename(s: str) -> str:
+    bad = '<>:"/\\|?*'
+    for ch in bad:
+        s = s.replace(ch, "_")
+    return s.strip().replace(" ", "_")
 
 
-def ensure_tables(engine: Engine | None = None) -> None:
-    """Create minimal tables if absent."""
-    engine = engine or _engine()
-    with engine.begin() as conn:
-        conn.execute(text(DDL_GAMES))
-        conn.execute(text(DDL_ANALYSIS_CACHE))
-        conn.execute(text(DDL_MEDIA))
+def _normalize_pgn_for_hash(pgn: str) -> str:
+    """Strip comments/clock/evals; keep headers+moves so we can dedup."""
+    try:
+        game = chess.pgn.read_game(io.StringIO(pgn))
+        if game is None:
+            return pgn.strip()
+        # Re-emit compact PGN: headers then SAN moves only.
+        out = io.StringIO()
+        headers = "\n".join(f'[{k} "{v}"]' for k, v in game.headers.items())
+        out.write(headers + "\n\n")
+        board = game.board()
+        moves = []
+        for mv in game.mainline_moves():
+            moves.append(board.san(mv))
+            board.push(mv)
+        out.write(" ".join(moves))
+        return out.getvalue().strip()
+    except Exception:
+        return pgn.strip()
 
 
-def _compute_moves_hash(white: str, black: str, date: str | None, san_moves: list[str]) -> str:
-    h = hashlib.sha256()
-    key = f"{white}|{black}|{date or ''}|{' '.join(san_moves)}".encode("utf-8", "ignore")
-    h.update(key)
-    return h.hexdigest()
+def pgn_hash(pgn: str) -> str:
+    return hashlib.sha1(_normalize_pgn_for_hash(pgn).encode("utf-8")).hexdigest()
 
 
-def _export_clean_pgn(game: chess.pgn.Game) -> str:
-    exporter = chess.pgn.StringExporter(headers=True, variations=False, comments=False)
-    return game.accept(exporter)
-
-
-def _iter_pgn_games(stream: t.BinaryIO) -> t.Iterator[chess.pgn.Game]:
-    """Yield games from a binary text stream (utf-8 assumed)."""
-    # chess.pgn.read_game expects a *text* stream; wrap bytes with TextIOWrapper
-    with io.TextIOWrapper(stream, encoding="utf-8", errors="ignore", newline="") as tf:
-        while True:
-            game = chess.pgn.read_game(tf)
-            if game is None:
-                break
-            yield game
-
-
-def _iter_zst_games(stream: t.BinaryIO) -> t.Iterator[chess.pgn.Game]:
-    if zstd is None:
-        raise RuntimeError("zstandard is not installed; cannot read .zst files. Add 'zstandard' to deps.")
-    dctx = zstd.ZstdDecompressor()
-    with dctx.stream_reader(stream) as reader:
-        yield from _iter_pgn_games(reader)
-
-
-def _san_list(game: chess.pgn.Game) -> list[str]:
-    san: list[str] = []
-    board = game.board()
-    for mv in game.mainline_moves():
-        san.append(board.san(mv))
-        board.push(mv)
-    return san
-
-
-class GameIngestor:
-    """Import PGNs into the database with deduplication."""
-
-    def __init__(self, engine: Engine | None = None) -> None:
-        self.engine = engine or _engine()
-        ensure_tables(self.engine)
-
-    def ingest_path(self, path: str, source: str = "manual") -> dict:
-        """
-        Ingest a file or directory.
-        - If directory: scans *.pgn and *.pgn.zst.
-        Returns counts: {"inserted": n, "duplicates": m, "errors": k}
-        """
-        p = pathlib.Path(path)
-        if not p.exists():
-            raise FileNotFoundError(path)
-
-        if p.is_dir():
-            inserted = dup = errs = 0
-            for entry in p.rglob("*"):
-                if entry.is_file() and (entry.suffix.lower() == ".pgn" or entry.suffix.lower() == ".zst"):
-                    c = self._ingest_file(entry, source=source)
-                    inserted += c["inserted"]
-                    dup += c["duplicates"]
-                    errs += c["errors"]
-            return {"inserted": inserted, "duplicates": dup, "errors": errs}
-        else:
-            return self._ingest_file(p, source=source)
-
-    def ingest_url(self, url: str, source: str = "lichess") -> dict:
-        """
-        Ingest a remote PGN or .zst (e.g., Lichess dump URL).
-        Requires 'requests' and (for .zst) 'zstandard'.
-        """
-        if requests is None:
-            raise RuntimeError("requests is not installed; cannot fetch URLs. Add 'requests' to deps.")
-
-        inserted = dup = errs = 0
-        with requests.get(url, stream=True, timeout=60) as resp:
-            resp.raise_for_status()
-            if url.endswith(".zst"):
-                iterator = _iter_zst_games(io.BytesIO(resp.content))
-            else:
-                iterator = _iter_pgn_games(io.BytesIO(resp.content))
-            for game in iterator:
-                ok = self._insert_game(game, source)
-                if ok is True:
-                    inserted += 1
-                elif ok is False:
-                    dup += 1
-                else:
-                    errs += 1
-        return {"inserted": inserted, "duplicates": dup, "errors": errs}
-
-    # ---- internals ----
-
-    def _ingest_file(self, path: os.PathLike[str] | str, source: str) -> dict:
-        inserted = dup = errs = 0
-        path = pathlib.Path(path)
-        op = open
-        if path.suffix.lower() == ".zst":
-            # raw bytes; we'll route through _iter_zst_games
-            iterator_factory = _iter_zst_games
-        else:
-            iterator_factory = _iter_pgn_games
-
-        with op(path, "rb") as f:
-            for game in iterator_factory(f):
-                ok = self._insert_game(game, source)
-                if ok is True:
-                    inserted += 1
-                elif ok is False:
-                    dup += 1
-                else:
-                    errs += 1
-
-        return {"inserted": inserted, "duplicates": dup, "errors": errs}
-
-    def _insert_game(self, game: chess.pgn.Game, source: str) -> bool | None:
-        """Return True if inserted, False if duplicate, None on error."""
-        headers = game.headers
-        white = headers.get("White", "") or ""
-        black = headers.get("Black", "") or ""
-        date = headers.get("Date", "") or None
-        event = headers.get("Event", "") or None
-        site = headers.get("Site", "") or None
-        result = headers.get("Result", "") or None
-        eco = headers.get("ECO", "") or None
-
-        san_moves = _san_list(game)
-        ply_count = len(san_moves)
-        pgn_text = _export_clean_pgn(game)
-        moves_hash = _compute_moves_hash(white, black, date, san_moves)
-
-        stmt = text(
-            """
-            INSERT INTO games (source, event, site, date, white, black, result, eco, ply_count, pgn, moves_hash)
-            VALUES (:source, :event, :site, NULLIF(:date,''), :white, :black, :result, :eco, :ply_count, :pgn, :moves_hash)
-            """
-        )
-
-        try:
-            with self.engine.begin() as conn:
-                conn.execute(
-                    stmt,
-                    {
-                        "source": source,
-                        "event": event,
-                        "site": site,
-                        "date": date,
-                        "white": white,
-                        "black": black,
-                        "result": result,
-                        "eco": eco,
-                        "ply_count": ply_count,
-                        "pgn": pgn_text,
-                        "moves_hash": moves_hash,
-                    },
-                )
-            return True
-        except IntegrityError:
-            # Duplicate by moves_hash UNIQUE constraint
-            return False
-        except Exception:
+def save_unique_pgn(pgn: str, source: str = "unknown") -> Optional[Path]:
+    """Save PGN if not already on disk. Returns path or None if duplicate/invalid."""
+    try:
+        game = chess.pgn.read_game(io.StringIO(pgn))
+        if game is None:
             return None
+        hv = pgn_hash(pgn)
+        white = _safe_filename(game.headers.get("White", "White"))
+        black = _safe_filename(game.headers.get("Black", "Black"))
+        date = _safe_filename(game.headers.get("Date", "????.??.??"))
+        event = _safe_filename(game.headers.get("Event", source))
+
+        fname = f"{date}_{white}_vs_{black}_{event}_{hv[:10]}.pgn"
+        fpath = PGN_DIR / fname
+        if fpath.exists():
+            logger.info(f"Skip duplicate: {fpath.name}")
+            return None
+
+        fpath.write_text(pgn, encoding="utf-8")
+        logger.info(f"Saved PGN → {fpath.relative_to(PGN_DIR.parent)}")
+        return fpath
+    except Exception as e:
+        logger.warning(f"Failed to save PGN: {e}")
+        return None
+
+
+# ------------------------------- lichess ----------------------------------- #
+
+@dataclass
+class LichessQuery:
+    username: str
+    max_games: int = 100
+    since_ms: Optional[int] = None
+    until_ms: Optional[int] = None
+    perf_type: Optional[str] = None  # "classical","rapid","blitz","bullet","correspondence"
+    rated: Optional[bool] = None
+    pgn_in_json: bool = True
+    opening: bool = True
+
+
+def download_lichess_user_games(q: LichessQuery) -> List[Path]:
+    """
+    Download games for a user from Lichess Export API.
+    Docs: https://lichess.org/api#operation/apiGamesUser
+    """
+    url = f"https://lichess.org/api/games/user/{q.username}"
+    headers = {"Accept": "application/x-ndjson"}
+    if settings.LICHESS_TOKEN:
+        headers["Authorization"] = f"Bearer {settings.LICHESS_TOKEN}"
+
+    params = {
+        "max": q.max_games,
+        "moves": "true",
+        "clocks": "false",
+        "evals": "false",
+        "opening": "true" if q.opening else "false",
+        "pgnInJson": "true" if q.pgn_in_json else "false",
+        "since": q.since_ms or "",
+        "until": q.until_ms or "",
+    }
+    if q.perf_type:
+        params["perfType"] = q.perf_type
+    if q.rated is not None:
+        params["rated"] = "true" if q.rated else "false"
+
+    logger.info(f"[lichess] GET {url} (max={q.max_games}, perf={q.perf_type})")
+    with requests.get(url, headers=headers, params=params, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        saved: List[Path] = []
+        for line in r.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            # if pgnInJson=true, line is JSON with a "pgn" field
+            if q.pgn_in_json:
+                try:
+                    obj = json.loads(line)
+                    pgn = obj.get("pgn")
+                    if pgn:
+                        p = save_unique_pgn(pgn, source=f"lichess:{q.username}")
+                        if p:
+                            saved.append(p)
+                except json.JSONDecodeError:
+                    # If server responded with raw PGN lines (rare), try to buffer them
+                    pass
+            else:
+                # raw PGN stream (rarely used here)
+                p = save_unique_pgn(line, source=f"lichess:{q.username}")
+                if p:
+                    saved.append(p)
+        return saved
+
+
+# ------------------------------- chess.com --------------------------------- #
+
+def _chesscom_get_archives(username: str) -> List[str]:
+    url = f"https://api.chess.com/pub/player/{username}/games/archives"
+    logger.info(f"[chess.com] GET archives {username}")
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    return list(data.get("archives", []))
+
+
+def download_chesscom_user_games(
+    username: str,
+    year_from: Optional[int] = None,
+    month_from: Optional[int] = None,
+    year_to: Optional[int] = None,
+    month_to: Optional[int] = None,
+    max_months: Optional[int] = None,
+) -> List[Path]:
+    """
+    Fetch Chess.com monthly archives for a player, extract PGNs.
+    Public docs: https://www.chess.com/news/view/published-data-api
+    """
+    archives = _chesscom_get_archives(username)
+    # Filter by range, if provided
+    def in_range(url: str) -> bool:
+        # urls look like .../games/YYYY/MM
+        try:
+            parts = url.rstrip("/").split("/")
+            yy = int(parts[-2]); mm = int(parts[-1])
+        except Exception:
+            return True
+        def key(y: int, m: int) -> int: return y * 12 + m
+        if year_from and month_from and key(yy, mm) < key(year_from, month_from):
+            return False
+        if year_to and month_to and key(yy, mm) > key(year_to, month_to):
+            return False
+        return True
+
+    archives = [u for u in archives if in_range(u)]
+    if max_months:
+        archives = archives[-max_months:]
+
+    saved: List[Path] = []
+    for url in archives:
+        logger.info(f"[chess.com] GET {url}")
+        r = requests.get(url, timeout=60)
+        if r.status_code != 200:
+            logger.warning(f"[chess.com] {url} -> {r.status_code}")
+            continue
+        data = r.json()
+        games = data.get("games", [])
+        for g in games:
+            pgn = g.get("pgn")
+            if not pgn:
+                # some entries have only FEN/moves; skip
+                continue
+            p = save_unique_pgn(pgn, source=f"chesscom:{username}")
+            if p:
+                saved.append(p)
+    return saved
+
+
+# ------------------------------- folder ingest ----------------------------- #
+
+def read_pgn_files(folder: Path = PGN_DIR) -> List[Path]:
+    folder.mkdir(parents=True, exist_ok=True)
+    return sorted([p for p in folder.glob("*.pgn") if p.is_file()])
+
+
+def read_pgn_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")

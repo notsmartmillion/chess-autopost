@@ -1,14 +1,22 @@
 {
-  "name": "chess-renderer",
+  "name": "chess-autopost-renderer",
+  "version": "0.0.1",
   "private": true,
+  "type": "module",
   "scripts": {
-    "build": "tsc --noEmit",
-    "render:video": "remotion render src/compositions/Video.tsx out/video.mp4",
-    "render:thumb": "remotion still src/compositions/Thumbnail.tsx out/thumb.png"
+    "preview": "remotion preview src/index.tsx",
+    "render": "remotion render src/index.tsx ChessVideo --codec=h264 --crf=18 --quality=80 --overwrite --out=out/video.mp4",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "remotion": "4.0.347"
   },
   "devDependencies": {
-    "typescript": "^5",
-    "@remotion/cli": "^4"
+    "@remotion/cli": "4.0.347",
+    "@types/react": "18.2.61",
+    "@types/react-dom": "18.2.19",
+    "typescript": "5.5.4"
   }
 }
-

@@ -60,3 +60,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/settings.json
+
+# Ignore package manifests only in apps/renderer
+/apps/renderer/package*.json

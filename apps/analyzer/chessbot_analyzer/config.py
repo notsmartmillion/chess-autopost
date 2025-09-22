@@ -79,6 +79,16 @@ class Settings(BaseSettings):
         # Trim whitespace; don't provide a default (keeps it required)
         return v.strip()
 
+    @validator("DB_URL", pre=True)
+    def _fallback_database_url(cls, v: Optional[str]):
+        """Allow DATABASE_URL as a fallback for compatibility with existing setups."""
+        if v and isinstance(v, str) and v.strip():
+            return v
+        env_v = os.getenv("DATABASE_URL")
+        if env_v:
+            return env_v
+        return v
+
     @validator("STOCKFISH_PATH", pre=True)
     def _normalize_stockfish_path(cls, v: str) -> str:
         """

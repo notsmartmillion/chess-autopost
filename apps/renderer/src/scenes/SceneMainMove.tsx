@@ -7,7 +7,7 @@ import { Heatmap } from '../components/Heatmap';
 import { PinHighlight } from '../components/PinHighlight';
 import { EvalBar } from '../components/EvalBar';
 import { PortraitPanel } from '../components/PortraitPanel';
-import { getAnimationTiming } from '../lib/audio';
+import { getAnimationTiming } from '../lib/audio-browser';
 
 interface SceneMainMoveProps {
   scene: SceneMain;

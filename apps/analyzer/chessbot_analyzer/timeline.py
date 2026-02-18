@@ -47,12 +47,15 @@ class SceneMain(BaseModel):
     moveNumber: Optional[int] = None
     player: Optional[str] = None
     cueTimes: Optional[Dict[str, float]] = None
+    captured: bool = False
+    tag: Optional[str] = None
 
 
 class SceneAlt(BaseModel):
     type: str = "alt"
     id: str
     label: str
+    fen: str                  # <-- starting FEN for this alt preview (branch point)
     pv: List[str]             # SAN sequence shown (2–3 plies)
     arrows: List[List[str]]   # [[from,to], ...] for each preview step
     attacked: Attacked        # after last step
@@ -117,6 +120,7 @@ class TimelineBuilder:
     def __init__(self, engine: Any | None = None, cache_manager: Any | None = None) -> None:
         self.engine = _EngineAdapter(engine)
         self.cache_manager = cache_manager
+        self.debug_rows: List[Dict[str, Any]] = []
 
     # ----------- Public API -----------
 
@@ -190,6 +194,7 @@ class TimelineBuilder:
         }
 
         scenes: List[Dict[str, Any]] = []
+        self.debug_rows = []
         total_ms = 0
 
         board = game.board()
@@ -214,6 +219,59 @@ class TimelineBuilder:
                 infos_post = self.engine.analyse(board, multipv=multipv, depth=depth)
                 best_cp_post, _best_mate_post = self._extract_cp_mate(infos_post[0], pov=board.turn)
 
+                # Determine capture and simple engine tag
+                is_capture = board_before.is_capture(move)
+
+                # Engine analysis on pre-move position for tag classification
+                infos_pre = self.engine.analyse(board_before, multipv=multipv, depth=depth)
+                best_cp_pre, best_mate_pre = self._extract_cp_mate(infos_pre[0], pov=board_before.turn) if infos_pre else (None, None)
+
+                def classify_tag() -> Optional[str]:
+                    try:
+                        # Positive values good for side to move (pre-move)
+                        if ply_idx <= 6:
+                            return "book"
+                        if best_mate_pre is not None:
+                            # If mate existed and move does not keep it, consider big mistake
+                            if _best_mate_post is None:
+                                return "blunder"
+                            return "great"
+                        if best_cp_pre is None or best_cp_post is None:
+                            return None
+                        mover_cp_after = (-best_cp_post)
+                        delta = mover_cp_after - best_cp_pre  # negative = worse than best
+                        if delta <= -350:
+                            return "blunder"
+                        if delta <= -80:
+                            return "inaccuracy"
+                        if delta >= 220:
+                            return "brilliant"
+                        if delta >= 120:
+                            return "great"
+                        return None
+                    except Exception:
+                        return None
+
+                move_tag = classify_tag()
+
+                # Collect debug for tag decision
+                try:
+                    self.debug_rows.append({
+                        "id": main_id,
+                        "ply": ply_idx,
+                        "move": san_move,
+                        "mover": "white" if (ply_idx % 2 == 1) else "black",
+                        "cp_pre": best_cp_pre,
+                        "cp_post_side_to_move": best_cp_post,
+                        "delta_mover": ( (-best_cp_post) - best_cp_pre ) if (best_cp_pre is not None and best_cp_post is not None) else None,
+                        "mate_pre": best_mate_pre,
+                        "mate_post": _best_mate_post,
+                        "captured": is_capture,
+                        "tag": move_tag,
+                    })
+                except Exception:
+                    pass
+
                 # Build main scene
                 main_id = f"m{ply_idx}"
                 main_duration = self._duration_for(main_id, audio_durations)
@@ -230,41 +288,74 @@ class TimelineBuilder:
                     durationMs=main_duration,
                     moveNumber=(ply_idx + 1) // 2 if board.turn == chess.BLACK else (ply_idx // 2 + 1),
                     player="white" if (ply_idx % 2 == 1) else "black",
+                    captured=is_capture,
+                    tag=move_tag,
                 )
                 scenes.append(main_scene.dict())
                 total_ms += main_duration
 
-                # Alt previews: analyse on the *pre-move* position (side-to-move's choice)
-                infos_pre = self.engine.analyse(board_before, multipv=multipv, depth=depth)
+                # Alt previews (only on meaningful moves):
+                #   - after opening phase
+                #   - when played move is a clear blunder (drop >= 3 pawns vs best)
+                #   - or when a mating line exists (for/against)
+                # We already computed infos_pre above for tag; reuse variable
 
-                # Skip PV #1 (best); take #2.. up to alt_max
-                for alt_idx, info in enumerate(infos_pre[1:alt_max + 1], start=2):
-                    alt_id = f"{main_id}_alt{alt_idx}"
-                    alt_scene = self._build_alt_scene(
-                        alt_id,
-                        board_before,
-                        info,
-                        preview_plies=alt_preview_plies,
-                        label=f"Alt #{alt_idx - 1}",
-                        multipv_index=alt_idx,
-                        audio_durations=audio_durations,
-                    )
-                    scenes.append(alt_scene.dict())
-                    total_ms += alt_scene.durationMs
+                allow_alt = False
+                MIN_PLY_FOR_ALT = 10  # show alts only after 5 full moves
+                BLUNDER_DROP_CP = 300  # ~3 pawns worse than best line
 
-                    reset_id = f"{main_id}_reset{alt_idx}"
-                    reset_scene = SceneReset(
-                        id=reset_id,
-                        durationMs=self._duration_for(reset_id, audio_durations, 200),
-                    )
-                    scenes.append(reset_scene.dict())
-                    total_ms += reset_scene.durationMs
+                if ply_idx >= MIN_PLY_FOR_ALT and infos_pre:
+                    best_cp_pre, best_mate_pre = self._extract_cp_mate(infos_pre[0], pov=board_before.turn)
+                    # cp after the played move from the mover's POV (negate post side-to-move POV)
+                    mover_cp_after = (-best_cp_post) if best_cp_post is not None else None
+
+                    if _best_mate_post is not None or best_mate_pre is not None:
+                        allow_alt = True
+                    elif best_cp_pre is not None and mover_cp_after is not None:
+                        delta = mover_cp_after - best_cp_pre
+                        if delta <= -BLUNDER_DROP_CP:
+                            allow_alt = True
+
+                if allow_alt:
+                    # Skip PV #1 (best); take next best up to alt_max
+                    for alt_idx, info in enumerate(infos_pre[1:alt_max + 1], start=2):
+                        alt_id = f"{main_id}_alt{alt_idx}"
+                        alt_scene = self._build_alt_scene(
+                            alt_id,
+                            board_before,
+                            info,
+                            preview_plies=alt_preview_plies,
+                            label="Alternative",
+                            multipv_index=alt_idx,
+                            audio_durations=audio_durations,
+                        )
+                        scenes.append(alt_scene.dict())
+                        total_ms += alt_scene.durationMs
+
+                        reset_id = f"{main_id}_reset{alt_idx}"
+                        reset_scene = SceneReset(
+                            id=reset_id,
+                            durationMs=self._duration_for(reset_id, audio_durations, 200),
+                        )
+                        scenes.append(reset_scene.dict())
+                        total_ms += reset_scene.durationMs
         finally:
             # Close engine if we own it
             self.engine.close()
 
         tl = Timeline(meta=meta, scenes=scenes, totalDurationMs=total_ms)
         logger.info(f"Built timeline with {len(scenes)} scenes, total {total_ms} ms")
+        # Write debug rows if present
+        try:
+            if self.debug_rows:
+                out_path = Path(settings.OUTPUTS_DIR if hasattr(settings, 'OUTPUTS_DIR') else Path(__file__).resolve().parents[3] / 'outputs')
+                out_path.mkdir(parents=True, exist_ok=True)
+                dbg = out_path / 'tag_debug.json'
+                with open(dbg, 'w', encoding='utf-8') as f:
+                    json.dump(self.debug_rows, f, indent=2)
+                logger.info(f"Wrote tag debug → {dbg}")
+        except Exception as e:
+            logger.warning(f"Failed to write tag_debug.json: {e}")
         return tl
 
     def save(self, timeline: Timeline, path: str) -> None:
@@ -307,12 +398,17 @@ class TimelineBuilder:
         audio_durations: Optional[Dict[str, int]],
         default_ms: int = 2000,
         min_ms: int = 1200,
-        max_ms: int = 2500,
+        max_ms: int = 3500,
     ) -> int:
         if audio_durations and scene_id in audio_durations:
             ms = audio_durations[scene_id] + 150
-            return max(min_ms, min(max_ms, ms))
-        return default_ms
+        else:
+            ms = default_ms
+        # Add extra time for main move scenes to stabilize visuals (e.g., eval bar)
+        is_main = scene_id.startswith("m") and ("_" not in scene_id)
+        if is_main:
+            ms += 1000  # +1s per move
+        return max(min_ms, min(max_ms, ms))
 
     def _extract_cp_mate(self, info: Dict[str, Any], pov: chess.Color) -> Tuple[Optional[int], Optional[int]]:
         """
@@ -375,6 +471,7 @@ class TimelineBuilder:
         return SceneAlt(
             id=scene_id,
             label=label,
+            fen=root_board.fen(),     # <-- seed from the PRE-MOVE (branch) position
             pv=pv_san,
             arrows=arrows,
             attacked=attacked_model,

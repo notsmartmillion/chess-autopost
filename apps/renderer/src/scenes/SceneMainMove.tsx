@@ -3,6 +3,7 @@ import { useCurrentFrame, useVideoConfig, interpolate, Easing } from 'remotion';
 import { SceneMain } from '../types/timeline';
 import { Board } from '../components/Board';
 import { Arrow } from '../components/Arrow';
+import { SquareHighlight } from '../components/SquareHighlight';
 import { Heatmap } from '../components/Heatmap';
 import { PinHighlight } from '../components/PinHighlight';
 import { EvalBar } from '../components/EvalBar';
@@ -17,9 +18,11 @@ interface SceneMainMoveProps {
       black: string;
     };
   };
+  showChrome?: boolean; // persistent layout can hide EvalBar/Portraits
+  renderBoard?: boolean; // when false, only overlays render
 }
 
-export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline }) => {
+export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline, showChrome = true, renderBoard = true }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   
@@ -56,10 +59,10 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline })
     fps
   );
   
-  // Arrow animation
+  // Move highlight animation
   const arrowOpacity = interpolate(
     frame,
-    [arrowTiming.startFrame, arrowTiming.startFrame + 15],
+    [arrowTiming.startFrame, arrowTiming.startFrame + 8],
     [0, 1],
     {
       extrapolateLeft: 'clamp',
@@ -71,7 +74,7 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline })
   // Eval bar animation
   const evalBarOpacity = interpolate(
     frame,
-    [evalBarTiming.startFrame, evalBarTiming.startFrame + 20],
+    [evalBarTiming.startFrame, evalBarTiming.startFrame + 10],
     [0, 1],
     {
       extrapolateLeft: 'clamp',
@@ -83,7 +86,7 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline })
   // Pin highlight animation
   const pinOpacity = interpolate(
     frame,
-    [pinTiming.startFrame, pinTiming.startFrame + 10],
+    [pinTiming.startFrame, pinTiming.startFrame + 6],
     [0, 1],
     {
       extrapolateLeft: 'clamp',
@@ -95,7 +98,7 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline })
   // Heatmap animation
   const heatmapOpacity = interpolate(
     frame,
-    [heatmapTiming.startFrame, heatmapTiming.startFrame + 15],
+    [heatmapTiming.startFrame, heatmapTiming.startFrame + 8],
     [0, 1],
     {
       extrapolateLeft: 'clamp',
@@ -109,45 +112,45 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline })
       style={{
         width: '100%',
         height: '100%',
-        backgroundColor: '#1a1a1a',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        justifyContent: 'center',
+        backgroundColor: 'transparent',
         position: 'relative',
       }}
     >
-      {/* Portrait Panel */}
-      <div
-        style={{
-          position: 'absolute',
-          top: 20,
-          left: 20,
-          right: 20,
-          zIndex: 10,
-        }}
-      >
-        <PortraitPanel
-          whitePlayer={timeline.meta.white}
-          blackPlayer={timeline.meta.black}
-          currentPlayer={scene.player}
-        />
-      </div>
+      {/* Portrait Panel (optional) */}
+      {showChrome && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 20,
+            left: 20,
+            right: 20,
+            zIndex: 10,
+          }}
+        >
+          <PortraitPanel
+            whitePlayer={timeline.meta.white}
+            blackPlayer={timeline.meta.black}
+            currentPlayer={scene.player}
+          />
+        </div>
+      )}
       
-      {/* Main Board */}
+      {/* Main Board (optional when using persistent board) */}
       <div
         style={{
           position: 'relative',
-          marginTop: 120,
+          marginTop: 0,
         }}
       >
-        <Board
-          fen={scene.fen}
-          size={600}
-          showCoordinates={true}
-        />
+        {renderBoard && (
+          <Board
+            fen={scene.fen}
+            size={720}
+            showCoordinates={true}
+          />
+        )}
         
-        {/* Last Move Arrow */}
+        {/* Last move squares: BEFORE (origin) + AFTER (destination) */}
         <div
           style={{
             position: 'absolute',
@@ -156,13 +159,21 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline })
             opacity: arrowOpacity,
           }}
         >
-          <Arrow
-            from={scene.lastMoveArrow[0]}
-            to={scene.lastMoveArrow[1]}
-            weight="thick"
-            color="#ff6b6b"
-            boardSize={600}
-            squareSize={75}
+          {/* Origin (before) always yellow */}
+          <SquareHighlight
+            square={scene.lastMoveArrow[0]}
+            boardSize={720}
+            squareSize={90}
+            theme="yellow"
+            borderWidth={3}
+          />
+          {/* Destination (after): red if capture, else yellow */}
+          <SquareHighlight
+            square={scene.lastMoveArrow[1]}
+            boardSize={720}
+            squareSize={90}
+            theme={(scene as any).captured ? 'red' : 'yellow'}
+            borderWidth={4}
           />
         </div>
         
@@ -179,70 +190,96 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline })
           >
             <PinHighlight
               pin={pin}
-              boardSize={600}
-              squareSize={75}
+              boardSize={720}
+              squareSize={90}
               delay={index * 2}
             />
           </div>
         ))}
         
         {/* Attack Heatmap */}
-        <div
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            opacity: heatmapOpacity,
-          }}
-        >
-          <Heatmap
-            attacked={scene.attacked}
-            boardSize={600}
-            squareSize={75}
-            color="#ffeb3b"
-            opacity={0.3}
-          />
-        </div>
-      </div>
-      
-      {/* Evaluation Bar */}
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 100,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          opacity: evalBarOpacity,
-        }}
-      >
-        <EvalBar
-          target={scene.evalBarTarget}
-          width={300}
-          height={30}
-          showValue={true}
-        />
-      </div>
-      
-      {/* Move Information */}
-      <div
-        style={{
-          position: 'absolute',
-          bottom: 50,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          color: '#fff',
-          fontSize: 24,
-          fontWeight: 'bold',
-          textAlign: 'center',
-          textShadow: '2px 2px 4px rgba(0,0,0,0.8)',
-        }}
-      >
-        {scene.moveNumber && (
-          <div>
-            Move {scene.moveNumber}: {scene.move}
+        {scene.moveNumber && scene.moveNumber > 5 && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              opacity: heatmapOpacity,
+            }}
+          >
+            <Heatmap
+              attacked={scene.attacked}
+              prevAttacked={(scene as any).prevAttacked}
+              fen={scene.fen}
+              mover={scene.player || 'white'}
+              boardSize={720}
+              squareSize={90}
+            />
           </div>
         )}
       </div>
+      
+      {/* Evaluation Bar (optional, persistent layout will render its own) */}
+      {showChrome && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 100,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            opacity: evalBarOpacity,
+          }}
+        >
+          <EvalBar
+            target={scene.evalBarTarget}
+            width={300}
+            height={30}
+            showValue={true}
+          />
+        </div>
+      )}
+      
+      {/* Move Information removed per request */}
+
+      {/* Per-move engine tag badge at destination square (top-right of the square) */}
+      {(() => {
+        const tag = (scene as any).tag as string | undefined;
+        const allowed = new Set(['brilliant', 'great', 'inaccuracy', 'blunder']);
+        if (!tag || !allowed.has(tag)) return null;
+        const to = scene.lastMoveArrow[1];
+        const file = to.charCodeAt(0) - 97; // a=0
+        const rank = 8 - parseInt(to[1], 10); // 8=0
+        const squareSize = 90;
+        const x = file * squareSize;
+        const y = rank * squareSize;
+        const token = tag === 'brilliant' ? '!!' : tag === 'great' ? '!' : tag === 'blunder' ? '??' : '!?';
+        const bg = tag === 'brilliant' ? 'rgba(0, 199, 160, 0.95)'
+                 : tag === 'great' ? 'rgba(255, 193, 7, 0.95)'
+                 : tag === 'inaccuracy' ? 'rgba(255, 165, 0, 0.95)'
+                 : 'rgba(220, 53, 69, 0.95)';
+        return (
+          <div
+            style={{
+              position: 'absolute',
+              left: x + squareSize - 26,
+              top: y + 4,
+              width: 22,
+              height: 22,
+              borderRadius: 6,
+              background: bg,
+              color: '#fff',
+              fontSize: 12,
+              fontWeight: 900,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.35)'
+            }}
+          >
+            {token}
+          </div>
+        );
+      })()}
     </div>
   );
 };

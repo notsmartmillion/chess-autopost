@@ -1,9 +1,10 @@
 import React, {useEffect, useMemo, useState} from 'react';
-import {Audio, Sequence, staticFile, useVideoConfig} from 'remotion';
+import {Audio, Sequence, staticFile, useVideoConfig, useCurrentFrame, spring, interpolate, Easing} from 'remotion';
+import {EvalBar} from '../components/EvalBar';
+import {PortraitPanel} from '../components/PortraitPanel';
 import {Timeline, Scene} from '../types/timeline';
+import {Board} from '../components/Board';
 import {SceneMainMove} from '../scenes/SceneMainMove';
-import {SceneAltPreview} from '../scenes/SceneAltPreview';
-import {SceneReset} from '../scenes/SceneReset';
 
 type Props = {
   /** Base path for audio files in /public (default: /audio) */
@@ -84,39 +85,126 @@ export const ChessVideo: React.FC<Props> = ({audioBase = '/audio'}) => {
   }, [timeline, fps]);
 
   const noData = !timeline || (timeline.scenes ?? []).length === 0;
+  
+  // Only main scenes for this pass (visual + audio)
+  const mainSegments = useMemo(() => segments.filter((seg) => (seg.scene as any).type === 'main'), [segments]);
+  const frame = useCurrentFrame();
+  const { currentSegId, currentEvalTarget, currentFromFrame, currentDurationFrames, prevEvalTarget } = useMemo(() => {
+    let cursor = 0;
+    for (let i = 0; i < mainSegments.length; i++) {
+      const seg = mainSegments[i];
+      const end = cursor + seg.durationInFrames;
+      if (frame < end) {
+        return {
+          currentSegId: (seg.scene as any).id as string,
+          currentEvalTarget: (((seg.scene as any).evalBarTarget as number) ?? 0) as number,
+          currentFromFrame: cursor,
+          currentDurationFrames: seg.durationInFrames,
+          prevEvalTarget: i > 0 ? (((mainSegments[i-1].scene as any).evalBarTarget as number) ?? 0) : 0,
+        };
+      }
+      cursor = end;
+    }
+    const last = mainSegments[mainSegments.length - 1]?.scene as any;
+    return {
+      currentSegId: (last?.id as string) ?? 'end',
+      currentEvalTarget: (last?.evalBarTarget as number) ?? 0,
+      currentFromFrame: 0,
+      currentDurationFrames: 1,
+      prevEvalTarget: 0,
+    };
+  }, [frame, mainSegments]);
+
+  // Smooth the eval transition from previous -> current using a gentle spring
+  const relFrame = Math.max(0, frame - (currentFromFrame ?? 0));
+  const deadBand = 0.015;
+  const quantize = (v: number, step = 0.02) => Math.round(v / step) * step;
+  const fromEval = quantize(Math.max(-1, Math.min(1, prevEvalTarget ?? 0)));
+  const toEvalRaw = Math.max(-1, Math.min(1, currentEvalTarget ?? 0));
+  const toEval = quantize(toEvalRaw);
+  const targetEval = Math.abs(toEval - fromEval) < deadBand ? fromEval : toEval;
+  const prog = spring({
+    frame: relFrame,
+    fps,
+    config: { damping: 200, stiffness: 80, mass: 0.9 },
+    durationInFrames: Math.max(10, currentDurationFrames ?? 10),
+  });
+  const eased = Easing.inOut(Easing.cubic)(prog);
+  const smoothedEval = interpolate(eased, [0, 1], [fromEval, targetEval]); // -1..+1
 
   return (
-    <div style={{width: '100%', height: '100%', backgroundColor: '#1a1a1a', position: 'relative'}}>
-      {/* Scenes */}
-      {!noData &&
-        segments.map(({scene, from, durationInFrames}) => {
-          const audioSrc = staticFile(`${audioBase}/${scene.id}.wav`);
+    <div style={{width: '100%', height: '100%', backgroundColor: '#1a1a1a', position: 'relative', display:'flex', alignItems:'center', justifyContent:'center'}}>
+      {/* Persistent chrome */}
+      {!noData && (
+        <div style={{position:'absolute', top: 16, left: 16, right: 16}}>
+          <PortraitPanel whitePlayer={(timeline.meta as any).white} blackPlayer={(timeline.meta as any).black} currentPlayer={undefined} />
+        </div>
+      )}
 
-          // Trim audio to measured duration if available, never exceeding the scene bounds
-          const endAt =
-            scene.type !== 'reset' && durations[scene.id]
-              ? Math.min(
-                  durationInFrames,
-                  Math.max(1, Math.round((durations[scene.id] / 1000) * fps))
-                )
-              : durationInFrames;
+      {/* Board container (stable) */}
+      <div style={{position:'relative', width: 720, height: 720}}>
+        {/* Persistent board driven by the current scene's FEN */}
+        {!noData && (() => {
+          // Determine current FEN based on frame
+          let cursor = 0;
+          for (let i = 0; i < mainSegments.length; i++) {
+            const seg = mainSegments[i];
+            const end = cursor + seg.durationInFrames;
+            if (frame < end) {
+              return <Board fen={(seg.scene as any).fen} size={720} showCoordinates={true} />;
+            }
+            cursor = end;
+          }
+          const last = mainSegments[mainSegments.length - 1];
+          return last ? <Board fen={(last.scene as any).fen} size={720} showCoordinates={true} /> : null;
+        })()}
 
-          return (
-            <React.Fragment key={scene.id}>
-              <Sequence from={from} durationInFrames={durationInFrames}>
-                {scene.type === 'main' && <SceneMainMove scene={scene} timeline={timeline} />}
-                {scene.type === 'alt' && <SceneAltPreview scene={scene} />}
-                {scene.type === 'reset' && <SceneReset scene={scene} />}
-              </Sequence>
+        {!noData &&
+          mainSegments.map(({scene, from, durationInFrames}) => {
+            const audioSrc = staticFile(`${audioBase}/${scene.id}.wav`);
 
-              {scene.type !== 'reset' && (
-                <Sequence from={from} durationInFrames={endAt}>
-                  <Audio src={audioSrc} endAt={endAt} />
+            const endAt =
+              durations[scene.id]
+                ? Math.min(
+                    durationInFrames,
+                    Math.max(1, Math.round((durations[scene.id] / 1000) * fps))
+                  )
+                : durationInFrames;
+
+            return (
+              <React.Fragment key={scene.id}>
+                <Sequence from={from} durationInFrames={durationInFrames}>
+                  {/* Render overlays only; board is persistent */}
+                  <SceneMainMove
+                    scene={{
+                      ...(scene as any),
+                      prevAttacked: (mainSegments.find((s) => s.from + s.durationInFrames === from)?.scene as any)?.attacked,
+                      captured: Boolean((scene as any).captured),
+                    }}
+                    timeline={timeline}
+                    showChrome={false}
+                    renderBoard={false}
+                  />
                 </Sequence>
-              )}
-            </React.Fragment>
-          );
-        })}
+
+                {durations[scene.id] && (
+                  <Sequence from={from} durationInFrames={endAt}>
+                    <Audio src={audioSrc} endAt={endAt} />
+                  </Sequence>
+                )}
+              </React.Fragment>
+            );
+          })}
+      </div>
+
+      {/* Persistent vertical eval bar to the right of board */}
+      {!noData && (
+        <div style={{marginLeft: 12}}>
+          {/* changeKey is the current main scene id at the current frame for stable, per-move tweening */}
+          <EvalBar target={currentEvalTarget} orientation="vertical" width={36} height={720} smoothingFrames={90} startDelayFrames={6} showValue={false} changeKey={currentSegId} />
+        </div>
+      )}
+      
 
       {/* Friendly overlay when timeline.json is missing */}
       {noData && (

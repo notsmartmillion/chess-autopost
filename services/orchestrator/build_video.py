@@ -7,12 +7,16 @@
 from __future__ import annotations
 
 import json
+import os
+import random
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+import argparse
+import shutil as _shutil
+from typing import Dict, List, Tuple, Optional
 
 from chessbot_analyzer.timeline import TimelineBuilder
 from chessbot_analyzer.scripting import ScriptGenerator
@@ -27,6 +31,14 @@ PUB = ROOT / "apps" / "renderer" / "public"
 PUB_AUDIO = PUB / "audio"
 
 FPS = 30  # must match renderer
+
+# Where to look for PGNs (searched in order; recursive)
+PGN_SEARCH_DIRS = [
+    ROOT / "outputs" / "pgns" / "chesscom",
+    ROOT / "outputs" / "pgns" / "lichess",
+    ROOT / "outputs" / "pgns",
+    ROOT / "output" / "pgns",  # common typo fallback
+]
 
 
 def ensure_dirs() -> None:
@@ -108,11 +120,83 @@ def synthesize_batched(lines: List[Tuple[str, str, int]], batch_size: int = 8) -
     return durations
 
 
+def synthesize_silent(lines: List[Tuple[str, str, int]]) -> Dict[str, int]:
+    """
+    Generate silent placeholder WAVs for each requested line using fallback duration.
+    Useful on CI/Windows when pyttsx3 is slow or unavailable.
+    """
+    durations: Dict[str, int] = {}
+    for sid, _text, fallback_ms in lines:
+        p = AUDIO_DIR / f"{sid}.wav"
+        ensure_silent_wav(p, fallback_ms)
+        durations[sid] = fallback_ms
+    print(f"[tts] generated {len(durations)} silent clips")
+    return durations
+
+
+def _parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Build chess video assets (timeline, audio, render)")
+    ap.add_argument("--tts", choices=["local", "silent"], default=os.getenv("TTS_BACKEND", "local"),
+                    help="TTS backend: local (pyttsx3) or silent placeholders")
+    ap.add_argument("--batch-size", type=int, default=int(os.getenv("TTS_BATCH", "8")),
+                    help="Batch size for local TTS")
+    ap.add_argument("--max-scenes", type=int, default=None,
+                    help="Optional limit for number of non-reset scenes (debug)")
+    ap.add_argument("--pgn", type=str, default=None,
+                    help="Optional path to a specific .pgn file to render (relative to repo root or absolute)")
+    return ap.parse_args()
+
+
+def _find_random_pgn() -> Optional[Path]:
+    """
+    Search known PGN folders and return a random .pgn Path, or None if none found.
+    """
+    candidates: List[Path] = []
+    for base in PGN_SEARCH_DIRS:
+        if not base.exists():
+            continue
+        # gather recursively
+        for p in base.rglob("*.pgn"):
+            if p.is_file():
+                candidates.append(p)
+    if not candidates:
+        return None
+    return random.choice(candidates)
+
+
 def main() -> None:
+    args = _parse_args()
     ensure_dirs()
 
-    # --- 1) choose / load a game (swap later to selectors/ingest) ---
-    pgn = "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *"
+    # --- 1) Choose a PGN ---
+    if args.pgn:
+        pgn_path = Path(args.pgn)
+        if not pgn_path.is_absolute():
+            pgn_path = ROOT / pgn_path
+        try:
+            pgn = pgn_path.read_text(encoding="utf-8", errors="ignore")
+            rel = str(pgn_path.relative_to(ROOT)) if str(pgn_path).startswith(str(ROOT)) else str(pgn_path)
+            print(f"[ingest] Using PGN → {rel}")
+        except Exception as e:
+            print(f"[ingest] Failed to read {pgn_path}: {e}. Falling back to a random PGN.")
+            args.pgn = None
+            pgn = None  # defer to random chooser
+    else:
+        pgn = None
+
+    if pgn is None:
+        chosen_pgn = _find_random_pgn()
+        if chosen_pgn:
+            try:
+                pgn = chosen_pgn.read_text(encoding="utf-8", errors="ignore")
+                print(f"[ingest] Using random PGN → {chosen_pgn.relative_to(ROOT)}")
+            except Exception as e:
+                print(f"[ingest] Failed to read {chosen_pgn}: {e}. Falling back to sample PGN.")
+                pgn = "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *"
+        else:
+            print("[ingest] No PGNs found under outputs/pgns/**. Using sample PGN.")
+            pgn = "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *"
+
     tb = TimelineBuilder()
     timeline = tb.from_pgn(pgn, alt_preview_plies=2, alt_max=2)
     tl_json = timeline.dict() if hasattr(timeline, "dict") else timeline
@@ -142,6 +226,17 @@ def main() -> None:
 
     by_id = {v["id"]: v for v in move_lines}
 
+    # Clean previous synthesized clips to avoid stale carry-over
+    try:
+        if AUDIO_DIR.exists():
+            for old in AUDIO_DIR.glob("*.wav"):
+                try:
+                    old.unlink()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     # Inject cueTimes for renderer animation
     for s in tl_json["scenes"]:
         if s["type"] == "main":
@@ -159,17 +254,27 @@ def main() -> None:
     tasks: List[Tuple[str, str, int]] = []
     if intro_text:
         tasks.append(("intro", intro_text, 3000))
+    non_reset_count = 0
     for s in tl_json["scenes"]:
         if s["type"] == "reset":
+            continue
+        if args.max_scenes is not None and non_reset_count >= args.max_scenes:
             continue
         sid = s["id"]
         text = by_id.get(sid, {}).get("text")
         if text:
             tasks.append((sid, text, int(s.get("durationMs", 1200))))
+            non_reset_count += 1
     if outro_text:
         tasks.append(("outro", outro_text, 2500))
 
-    durations = synthesize_batched(tasks, batch_size=8) if tasks else {}
+    if tasks:
+        if args.tts == "silent":
+            durations = synthesize_silent(tasks)
+        else:
+            durations = synthesize_batched(tasks, batch_size=args.batch_size)
+    else:
+        durations = {}
     (OUT / "audio_durations.json").write_text(json.dumps(durations, indent=2), encoding="utf-8")
     print(f"[ok] synthesized {len(durations)} audio clips")
 
@@ -180,19 +285,52 @@ def main() -> None:
     (OUT / "timeline.json").write_text(json.dumps(tl_json, indent=2), encoding="utf-8")
 
     # --- 4) sync to renderer/public ---
+    # Clear old audio in public to avoid stale re-use
+    if PUB_AUDIO.exists():
+        for old in PUB_AUDIO.glob("*.wav"):
+            try:
+                old.unlink()
+            except Exception:
+                pass
     shutil.copy2(OUT / "timeline.json", PUB / "timeline.json")
     shutil.copy2(OUT / "audio_durations.json", PUB / "audio_durations.json")
     PUB_AUDIO.mkdir(exist_ok=True, parents=True)
-    for wav in AUDIO_DIR.glob("*.wav"):
-        shutil.copy2(wav, PUB_AUDIO / wav.name)
+    # Only copy WAVs that exist and are referenced in durations
+    for wid, _ms in (json.loads((OUT / "audio_durations.json").read_text(encoding="utf-8")).items()):
+        p = AUDIO_DIR / f"{wid}.wav"
+        if p.exists():
+            shutil.copy2(p, PUB_AUDIO / p.name)
     print("[ok] assets synced to apps/renderer/public")
 
     # --- 5) render exact length ---
     total_ms = int(tl_json.get("totalDurationMs", 0)) + meta.get("introMs", 0) + meta.get("outroMs", 0)
     frames = max(1, round((total_ms / 1000) * FPS))
-    cmd = ["npm", "--prefix", "apps/renderer", "run", "render", "--", f"--frame-range=0-{frames-1}"]
-    print("[render] running:", " ".join(cmd))
-    subprocess.check_call(cmd)
+
+    # Ensure renderer deps are installed (first run convenience)
+    renderer_dir = ROOT / "apps" / "renderer"
+    node_modules = renderer_dir / "node_modules"
+
+    def _which(cmd: str) -> Optional[str]:
+        return _shutil.which(cmd)
+
+    # Resolve npm executable on Windows (npm.cmd) vs POSIX (npm)
+    npm_exe = _which("npm") or _which("npm.cmd") or _which("npm.exe")
+    if not npm_exe:
+        raise FileNotFoundError("npm not found in PATH. Please install Node.js and ensure npm is available.")
+
+    if not node_modules.exists():
+        print("[render] installing renderer dependencies (first run)…")
+        subprocess.check_call([npm_exe, "ci"], cwd=str(renderer_dir))
+
+    # Ensure chess piece sprites are present
+    pieces_dir = renderer_dir / "public" / "pieces" / "merida"
+    if not pieces_dir.exists() or not any(pieces_dir.glob("*.svg")):
+        print("[assets] fetching Merida chess piece SVGs…")
+        subprocess.check_call([npm_exe, "run", "fetch-pieces"], cwd=str(renderer_dir))
+
+    cmd = [npm_exe, "run", "render", "--", f"--frame-range=0-{frames-1}"]
+    print("[render] running in", renderer_dir)
+    subprocess.check_call(cmd, cwd=str(renderer_dir))
     print("[ok] render complete → apps/renderer/out/video.mp4")
 
 

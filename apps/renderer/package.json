@@ -6,9 +6,11 @@
   "scripts": {
     "preview": "remotion preview src/index.tsx",
     "render": "remotion render src/index.tsx ChessVideo --codec=h264 --crf=18 --quality=80 --overwrite --out=out/video.mp4",
-    "build": "tsc --noEmit"
+    "build": "tsc --noEmit",
+    "fetch-pieces": "node scripts/fetch-pieces.mjs"
   },
   "dependencies": {
+    "chess.js": "^1.0.0",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "remotion": "4.0.347"

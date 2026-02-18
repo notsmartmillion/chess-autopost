@@ -1,72 +1,108 @@
-import React from 'react';
-import { useCurrentFrame, useVideoConfig, interpolate, Easing } from 'remotion';
-import { SceneAlt } from '../types/timeline';
-import { Board } from '../components/Board';
-import { Arrow } from '../components/Arrow';
-import { Heatmap } from '../components/Heatmap';
-import { getAnimationTiming } from '../lib/audio-browser';
+import React, {useEffect, useMemo} from 'react';
+import {useCurrentFrame, useVideoConfig} from 'remotion';
+import {Chess} from 'chess.js';
+import type {SceneAlt} from '../types/timeline';
+import {getAnimationTiming} from '../lib/audio';
+import {Board} from '../components/Board'; // expects props { fen: string; arrows?: {from:string;to:string}[] }
 
-interface SceneAltPreviewProps {
-  scene: SceneAlt;
-  baseFen?: string; // parent main scene's fen for now
-}
+type Props = { scene: SceneAlt };
 
-export const SceneAltPreview: React.FC<SceneAltPreviewProps> = ({ scene, baseFen }) => {
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+export const SceneAltPreview: React.FC<Props> = ({scene}) => {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const {fps} = useVideoConfig();
 
-  const labelTiming = getAnimationTiming(scene.durationMs, scene.cueTimes, 'alt', 0.0, fps);
-  const arrowTiming = getAnimationTiming(scene.durationMs, scene.cueTimes, 'arrow', 0.1, fps);
-  const heatmapTiming = getAnimationTiming(scene.durationMs, scene.cueTimes, 'attacked', 0.3, fps);
+  // 1) Seed from the PRE-MOVE branch FEN (added to SceneAlt by the timeline builder).
+  const baseFen =
+    typeof scene.fen === 'string' && scene.fen.trim().length > 0 ? scene.fen : undefined;
 
-  const labelOpacity = interpolate(frame, [labelTiming.startFrame, labelTiming.startFrame + 10], [0, 1], {
-    extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic),
-  });
-  const arrowOpacity = interpolate(frame, [arrowTiming.startFrame, arrowTiming.startFrame + 15], [0, 1], {
-    extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic),
-  });
-  const heatmapOpacity = interpolate(frame, [heatmapTiming.startFrame, heatmapTiming.startFrame + 10], [0, 1], {
-    extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.out(Easing.cubic),
-  });
+  // 2) Normalize PV (SAN) and precompute FEN snapshots while applying PV from the base position.
+  //    Length will be pv.length + 1 (initial + each applied move).
+  const pvFenSeq = useMemo(() => {
+    const seq: {fen: string}[] = [];
+    const ch = new Chess(baseFen); // undefined means start pos; otherwise seed from given FEN
+    seq.push({fen: ch.fen()});
+    for (const san of scene.pv?.slice(0, 3) ?? []) {
+      try {
+        const m = ch.move(san, {sloppy: true});
+        if (!m) break;
+        seq.push({fen: ch.fen()});
+      } catch {
+        break;
+      }
+    }
+    return seq;
+  }, [baseFen, scene.pv]);
 
-  const fen = baseFen ?? "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-  const cpText = typeof scene.cp === 'number' ? `${scene.cp >= 0 ? '+' : ''}${(scene.cp/100).toFixed(2)}` : null;
+  // 3) Decide when the PV should start revealing & how fast to advance through snapshots.
+  //    We consume the frames AFTER the 'alt' cue; split evenly across snapshots.
+  const totalMs = scene.durationMs ?? 1200;
+  const cue = getAnimationTiming(totalMs, scene.cueTimes, 'alt', 0.08, fps);
+  const framesAvailable = Math.max(1, cue.durationFrames);
+  const snaps = Math.max(1, pvFenSeq.length);
+  const perSnap = Math.max(1, Math.floor(framesAvailable / snaps));
+
+  // 4) Determine which snapshot is visible at the current frame.
+  const currentSnapIdx = useMemo(() => {
+    if (frame < cue.startFrame) return 0;
+    const progressed = frame - cue.startFrame;
+    return clamp(Math.floor(progressed / perSnap), 0, pvFenSeq.length - 1);
+  }, [frame, cue.startFrame, perSnap, pvFenSeq.length]);
+
+  // Current board FEN
+  const fen = pvFenSeq[currentSnapIdx]?.fen ?? baseFen ?? new Chess().fen();
+
+  // 5) Choose the arrow for the current step (comes from timeline: scene.arrows[i] for snapshot i+1).
+  //    When currentSnapIdx === 0, we’re at the base; otherwise show the (idx-1)-th arrow.
+  const arrowForStep =
+    currentSnapIdx > 0 ? scene.arrows?.[currentSnapIdx - 1] : undefined;
+
+  // Convert timeline arrow (['e2','e4']) into Board prop shape if needed
+  const arrows =
+    arrowForStep && Array.isArray(arrowForStep) && arrowForStep.length === 2
+      ? [{from: arrowForStep[0], to: arrowForStep[1]}]
+      : undefined;
+
+  // Small helper to format cp/mate nicely
+  const evalBadge =
+    scene.mate != null
+      ? ` · #${scene.mate}`
+      : scene.cp != null
+        ? ` · ${(scene.cp >= 0 ? '+' : '')}${(scene.cp / 100).toFixed(2)}`
+        : '';
 
   return (
-    <div style={{width:'100%',height:'100%',backgroundColor:'#1a1a1a',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',position:'relative'}}>
-      {/* Label */}
-      <div style={{
-        position:'absolute', top:50, left:'50%', transform:'translateX(-50%)',
-        color:'#fff', fontSize:28, fontWeight:'bold', textAlign:'center',
-        textShadow:'2px 2px 4px rgba(0,0,0,0.8)', opacity:labelOpacity,
-        backgroundColor:'rgba(0,0,0,0.7)', padding:'10px 20px', borderRadius:10, border:'2px solid #ff6b6b'
-      }}>
-        {scene.label}
-        {cpText && <div style={{ fontSize: 18, marginTop: 5 }}>{cpText}</div>}
-        {!cpText && scene.mate && <div style={{ fontSize: 18, marginTop: 5 }}>Mate in {scene.mate}</div>}
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        position: 'relative',
+      }}
+    >
+      {/* Floating label */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 24,
+          left: '50%',
+          transform: 'translateX(-50%)',
+          color: '#fff',
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: 18,
+          padding: '6px 10px',
+          borderRadius: 10,
+          border: '2px solid #ff6a3d',
+          background: 'rgba(0,0,0,0.35)',
+        }}
+      >
+        {(scene.label ?? 'Alt') + evalBadge}
       </div>
 
-      {/* Board + arrows + heatmap */}
-      <div style={{position:'relative', marginTop:120}}>
-        <Board fen={fen} size={500} showCoordinates />
-        {scene.arrows.map((arrow, index) => (
-          <div key={`alt-arrow-${index}`} style={{position:'absolute', top:0, left:0, opacity:arrowOpacity}}>
-            <Arrow from={arrow[0]} to={arrow[1]} weight="thin" dashed color="#4CAF50" boardSize={500} squareSize={62.5} delay={index * 3}/>
-          </div>
-        ))}
-        <div style={{position:'absolute', top:0, left:0, opacity:heatmapOpacity}}>
-          <Heatmap attacked={scene.attacked} boardSize={500} squareSize={62.5} color="#4CAF50" opacity={0.2} />
-        </div>
-      </div>
-
-      {/* PV text */}
-      <div style={{
-        position:'absolute', bottom:50, left:'50%', transform:'translateX(-50%)',
-        color:'#fff', fontSize:18, textAlign:'center', textShadow:'1px 1px 2px rgba(0,0,0,0.8)',
-        opacity:labelOpacity, backgroundColor:'rgba(0,0,0,0.7)', padding:'10px 15px', borderRadius:5
-      }}>
-        {scene.pv.slice(0, 3).join(' ')}{scene.pv.length > 3 && '...'}
-      </div>
+      <Board fen={fen} arrows={arrows} />
     </div>
   );
 };

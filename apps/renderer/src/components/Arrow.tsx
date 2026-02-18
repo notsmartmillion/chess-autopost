@@ -43,6 +43,10 @@ export const Arrow: React.FC<ArrowProps> = ({
   
   const fromCoords = getSquareCoords(from);
   const toCoords = getSquareCoords(to);
+  const fromFile = from.charCodeAt(0) - 97;
+  const fromRank = parseInt(from[1], 10);
+  const toFile = to.charCodeAt(0) - 97;
+  const toRank = parseInt(to[1], 10);
   
   // Calculate arrow properties
   const dx = toCoords.x - fromCoords.x;
@@ -62,8 +66,8 @@ export const Arrow: React.FC<ArrowProps> = ({
     }
   );
   
-  const strokeWidth = weight === 'thick' ? 4 : 2;
-  const arrowHeadSize = weight === 'thick' ? 12 : 8;
+  const strokeWidth = weight === 'thick' ? 6 : 3; // widened shafts
+  const arrowHeadSize = weight === 'thick' ? 16 : 10; // larger heads
   
   // Arrow head points
   const arrowHeadAngle1 = angle - 30;
@@ -73,6 +77,11 @@ export const Arrow: React.FC<ArrowProps> = ({
   const arrowHead2X = toCoords.x - arrowHeadSize * Math.cos(arrowHeadAngle2 * Math.PI / 180);
   const arrowHead2Y = toCoords.y - arrowHeadSize * Math.sin(arrowHeadAngle2 * Math.PI / 180);
   
+  // Decide if we draw straight or "L" shaped (for knight moves)
+  const df = Math.abs(toFile - fromFile);
+  const dr = Math.abs(toRank - fromRank);
+  const isKnightMove = (df === 1 && dr === 2) || (df === 2 && dr === 1);
+
   return (
     <div
       style={{
@@ -93,18 +102,56 @@ export const Arrow: React.FC<ArrowProps> = ({
           left: 0,
         }}
       >
-        {/* Arrow line */}
-        <line
-          x1={fromCoords.x}
-          y1={fromCoords.y}
-          x2={toCoords.x}
-          y2={toCoords.y}
-          stroke={color}
-          strokeWidth={strokeWidth}
-          strokeOpacity={animatedOpacity}
-          strokeDasharray={dashed ? '5,5' : 'none'}
-          strokeLinecap="round"
-        />
+        {/* Arrow shaft */}
+        {isKnightMove ? (
+          (() => {
+            // Draw an L-shape: go orthogonal from start to a corner, then to destination
+            // Choose turn so the longer leg is drawn last (towards the destination)
+            const goHorizontalLast = df > dr; // if horizontal span larger
+            const mid = goHorizontalLast
+              ? { x: toCoords.x, y: fromCoords.y } // vertical first, then horizontal
+              : { x: fromCoords.x, y: toCoords.y }; // horizontal first, then vertical
+            // First segment
+            return (
+              <>
+                <line
+                  x1={fromCoords.x}
+                  y1={fromCoords.y}
+                  x2={mid.x}
+                  y2={mid.y}
+                  stroke={color}
+                  strokeWidth={strokeWidth}
+                  strokeOpacity={animatedOpacity}
+                  strokeDasharray={dashed ? '5,5' : 'none'}
+                  strokeLinecap="round"
+                />
+                <line
+                  x1={mid.x}
+                  y1={mid.y}
+                  x2={toCoords.x}
+                  y2={toCoords.y}
+                  stroke={color}
+                  strokeWidth={strokeWidth}
+                  strokeOpacity={animatedOpacity}
+                  strokeDasharray={dashed ? '5,5' : 'none'}
+                  strokeLinecap="round"
+                />
+              </>
+            );
+          })()
+        ) : (
+          <line
+            x1={fromCoords.x}
+            y1={fromCoords.y}
+            x2={toCoords.x}
+            y2={toCoords.y}
+            stroke={color}
+            strokeWidth={strokeWidth}
+            strokeOpacity={animatedOpacity}
+            strokeDasharray={dashed ? '5,5' : 'none'}
+            strokeLinecap="round"
+          />
+        )}
         
         {/* Arrow head */}
         <polygon

@@ -652,6 +652,41 @@ def _center_control(board: chess.Board) -> Dict[str, int]:
     }
 
 
+def _detect_check_evasions(board: chess.Board) -> Optional[Dict[str, Any]]:
+    """How the side to move may answer a check — ``None`` when not in check.
+
+    Narration loves to assert that a king "cannot block" or "must move", and
+    those claims are cheap to get wrong by eye. Enumerating the legal replies
+    here means the commentary can state the fact instead of guessing at it.
+    """
+    if not board.is_check():
+        return None
+
+    king = board.king(board.turn)
+    king_moves: List[str] = []
+    blocks: List[str] = []
+    captures: List[str] = []
+    for move in board.legal_moves:
+        san = board.san(move)
+        if move.from_square == king:
+            king_moves.append(san)
+        elif board.is_capture(move):
+            captures.append(san)
+        else:
+            blocks.append(san)
+
+    return {
+        "kingMoves": king_moves,
+        "blocks": blocks,
+        "captures": captures,
+        "canBlock": bool(blocks),
+        "canCapture": bool(captures),
+        "onlyKingMoves": not blocks and not captures,
+        "isDouble": len(board.checkers()) > 1,
+        "isMate": board.is_checkmate(),
+    }
+
+
 def _compute_features(
     board: chess.Board, *, ply: int, castled: Dict[str, bool]
 ) -> Dict[str, Any]:
@@ -671,6 +706,9 @@ def _compute_features(
             "checkSquare",
             lambda: (_sq(board.king(board.turn)) if board.is_check() else None),
             None,
+        ),
+        "checkEvasions": _safe(
+            "checkEvasions", lambda: _detect_check_evasions(board), None
         ),
         "pawnStructure": _safe("pawnStructure", lambda: _pawn_structure(board), {}),
         "material": _safe("material", lambda: _material(board), {}),

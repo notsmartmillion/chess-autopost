@@ -822,14 +822,17 @@ class Director:
                     continue
                 origin = ray.get("from")
                 path = ray.get("ray") or []
-                if not origin or not path:
-                    continue
-                if not may_draw(f"ray:{origin}->{path[-1]}", origin == to):
-                    continue
-                arrows.append({"from": origin, "to": path[-1], "color": COLOR_MOVE})
                 hit = ray["hits"][0]
-                if hit.get("square"):
-                    highlights.append({"square": hit["square"], "kind": "danger"})
+                target = hit.get("square")
+                if not origin or not path or not target:
+                    continue
+                # Point at the piece under attack, not at the board edge. The
+                # ray runs to the edge geometrically, but drawing that far sends
+                # the arrow straight through the very piece it is about to hit.
+                if not may_draw(f"ray:{origin}->{target}", origin == to):
+                    continue
+                arrows.append({"from": origin, "to": target, "color": COLOR_MOVE})
+                highlights.append({"square": target, "kind": "danger"})
                 break
 
         # Hanging material belonging to the side that just moved.
@@ -1199,6 +1202,14 @@ Other rules:
 - Beats are spoken aloud, so no markdown, no lists, no symbols, no move numbers like "12.".
 - Write chess moves as spoken words: "knight to f3", "bishop takes e6", "castles kingside".
 - Use the supplied facts (pins, hanging pieces, long diagonals, evaluation, move quality). Never invent a tactic that is not in the facts.
+- Never claim a move is forced, only, or impossible unless the facts say so. On a
+  check, "checkEvasions" lists every legal reply: "blocks" are the interposing
+  moves, "captures" take the checking piece, "kingMoves" step away. Say "the king
+  has to move" ONLY when "onlyKingMoves" is true, and never say a check cannot be
+  blocked when "canBlock" is true. If a claim is not in the facts, describe what
+  is on the board instead.
+- A "longRays" entry ends at the piece it hits. The line stops there — do not
+  describe it as sweeping past that piece or reaching the far side of the board.
 - Vary sentence structure. Do not begin consecutive beats the same way. Never open two beats in a row with the player's name.
 - For 'variation' beats, explain the IDEA behind the engine's suggestion.
 - For 'resume' beats, transition smoothly back to what actually happened in the game.
@@ -1244,7 +1255,20 @@ def _compact_beat_for_llm(beat: Dict[str, Any], ply_facts: Optional[Dict[str, An
             facts_out["forks"] = features["forks"][:1]
         long_rays = [r for r in (features.get("longRays") or []) if r.get("hits")][:1]
         if long_rays:
-            facts_out["longRays"] = long_rays
+            # Trim the geometric ray at the piece it runs into. Handing over the
+            # full line to the edge invites narration about a bishop raking a
+            # square that a pawn is in fact standing in front of.
+            trimmed = []
+            for ray in long_rays:
+                ray = dict(ray)
+                target = (ray.get("hits") or [{}])[0].get("square")
+                path = ray.get("ray") or []
+                if target and target in path:
+                    ray["ray"] = path[: path.index(target) + 1]
+                trimmed.append(ray)
+            facts_out["longRays"] = trimmed
+        if features.get("checkEvasions"):
+            facts_out["checkEvasions"] = features["checkEvasions"]
         if ply_facts.get("bestMoveSan"):
             facts_out["engineBest"] = ply_facts["bestMoveSan"]
         if ply_facts.get("cpLoss") is not None:
@@ -1343,7 +1367,7 @@ def narrate_with_llm(
             # Stream: a full script can run well past the non-streaming
             # timeout guard, and thinking tokens count toward max_tokens.
             with client.messages.stream(
-                model=model or os.getenv("NARRATION_MODEL", "claude-opus-4-8"),
+                model=model or os.getenv("NARRATION_MODEL", "claude-opus-5"),
                 max_tokens=32000,
                 system=SYSTEM_PROMPT,
                 thinking={"type": "adaptive"},

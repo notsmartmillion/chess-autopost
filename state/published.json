@@ -5,5 +5,13 @@
     "archive": "2026-07-27_Daskalov_vs_Tal.mp4",
     "sizeMb": 37.4,
     "status": "not_uploaded"
+  },
+  {
+    "date": "2026-07-28",
+    "pgn": "2026-07-28_Plaskett_vs_Spassky.pgn",
+    "archive": "2026-07-28_Plaskett_vs_Spassky.mp4",
+    "sizeMb": 62.9,
+    "voice": "ttsapi",
+    "status": "not_uploaded"
   }
 ]

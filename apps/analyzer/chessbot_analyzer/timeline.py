@@ -170,6 +170,8 @@ class TimelineBuilder:
         alt_max: int = 2,
         depth: Optional[int] = None,
         multipv: Optional[int] = None,
+        min_ply_for_alt: int = 8,
+        alt_drop_cp: int = 120,
     ) -> Timeline:
         """
         Build a timeline from a raw PGN string. This path is great for tests and ad-hoc runs.
@@ -219,6 +221,17 @@ class TimelineBuilder:
                 infos_post = self.engine.analyse(board, multipv=multipv, depth=depth)
                 best_cp_post, _best_mate_post = self._extract_cp_mate(infos_post[0], pov=board.turn)
 
+                # White-POV centipawns for the eval bar (cp is from side-to-move POV,
+                # which alternates every ply — without this the bar flips each move).
+                if best_cp_post is not None:
+                    white_cp_post = best_cp_post if board.turn == chess.WHITE else -best_cp_post
+                elif _best_mate_post is not None:
+                    mate_for_stm = _best_mate_post > 0
+                    stm_is_white = board.turn == chess.WHITE
+                    white_cp_post = 10000 if (mate_for_stm == stm_is_white) else -10000
+                else:
+                    white_cp_post = 0
+
                 # Determine capture and simple engine tag
                 is_capture = board_before.is_capture(move)
 
@@ -226,54 +239,70 @@ class TimelineBuilder:
                 infos_pre = self.engine.analyse(board_before, multipv=multipv, depth=depth)
                 best_cp_pre, best_mate_pre = self._extract_cp_mate(infos_pre[0], pov=board_before.turn) if infos_pre else (None, None)
 
+                # Was the played move the engine's first choice?
+                best_pv = (infos_pre[0].get("pv") or []) if infos_pre else []
+                played_best = bool(best_pv) and best_pv[0] == move
+
+                # cp loss vs the best line, from the mover's POV.
+                # best_cp_pre: mover POV before the move. best_cp_post: opponent POV after,
+                # so negate it to get the mover's POV.
+                mover_cp_after = (-best_cp_post) if best_cp_post is not None else None
+                delta = (
+                    mover_cp_after - best_cp_pre
+                    if (best_cp_pre is not None and mover_cp_after is not None)
+                    else None
+                )
+
                 def classify_tag() -> Optional[str]:
-                    try:
-                        # Positive values good for side to move (pre-move)
-                        if ply_idx <= 6:
-                            return "book"
-                        if best_mate_pre is not None:
-                            # If mate existed and move does not keep it, consider big mistake
-                            if _best_mate_post is None:
-                                return "blunder"
-                            return "great"
-                        if best_cp_pre is None or best_cp_post is None:
-                            return None
-                        mover_cp_after = (-best_cp_post)
-                        delta = mover_cp_after - best_cp_pre  # negative = worse than best
-                        if delta <= -350:
-                            return "blunder"
-                        if delta <= -80:
-                            return "inaccuracy"
-                        if delta >= 220:
-                            return "brilliant"
-                        if delta >= 120:
-                            return "great"
+                    if ply_idx <= 6:
+                        return "book"
+                    if best_mate_pre is not None and best_mate_pre > 0:
+                        # A forced mate was available for the mover
+                        if _best_mate_post is None or _best_mate_post > 0:
+                            # Mate no longer forced (or now the opponent mates): thrown away
+                            return "blunder" if not played_best else None
+                        return "great"  # kept the mate going
+                    if delta is None:
                         return None
-                    except Exception:
-                        return None
+                    if delta <= -300:
+                        return "blunder"
+                    if delta <= -150:
+                        return "mistake"
+                    if delta <= -50:
+                        return "inaccuracy"
+                    if played_best:
+                        # Best move; call it "great" when it was clearly the only good one
+                        second = infos_pre[1] if len(infos_pre) > 1 else None
+                        if second is not None:
+                            cp2, mate2 = self._extract_cp_mate(second, pov=board_before.turn)
+                            if mate2 is not None and mate2 < 0:
+                                return "great"
+                            if cp2 is not None and best_cp_pre is not None and best_cp_pre - cp2 >= 150:
+                                return "great"
+                        return "best"
+                    return None
 
                 move_tag = classify_tag()
 
+                main_id = f"m{ply_idx}"
+
                 # Collect debug for tag decision
-                try:
-                    self.debug_rows.append({
-                        "id": main_id,
-                        "ply": ply_idx,
-                        "move": san_move,
-                        "mover": "white" if (ply_idx % 2 == 1) else "black",
-                        "cp_pre": best_cp_pre,
-                        "cp_post_side_to_move": best_cp_post,
-                        "delta_mover": ( (-best_cp_post) - best_cp_pre ) if (best_cp_pre is not None and best_cp_post is not None) else None,
-                        "mate_pre": best_mate_pre,
-                        "mate_post": _best_mate_post,
-                        "captured": is_capture,
-                        "tag": move_tag,
-                    })
-                except Exception:
-                    pass
+                self.debug_rows.append({
+                    "id": main_id,
+                    "ply": ply_idx,
+                    "move": san_move,
+                    "mover": "white" if (ply_idx % 2 == 1) else "black",
+                    "cp_pre": best_cp_pre,
+                    "cp_post_side_to_move": best_cp_post,
+                    "delta_mover": delta,
+                    "mate_pre": best_mate_pre,
+                    "mate_post": _best_mate_post,
+                    "played_best": played_best,
+                    "captured": is_capture,
+                    "tag": move_tag,
+                })
 
                 # Build main scene
-                main_id = f"m{ply_idx}"
                 main_duration = self._duration_for(main_id, audio_durations)
                 pins_models = self._pin_models(board)
                 attacked_model = Attacked(**FeatureDetectors.attacked_squares(board))
@@ -282,11 +311,11 @@ class TimelineBuilder:
                     fen=board.fen(),
                     move=san_move,
                     lastMoveArrow=last_arrow,
-                    evalBarTarget=cp_to_bar_value(best_cp_post or 0),
+                    evalBarTarget=cp_to_bar_value(white_cp_post),
                     pins=pins_models,
                     attacked=attacked_model,
                     durationMs=main_duration,
-                    moveNumber=(ply_idx + 1) // 2 if board.turn == chess.BLACK else (ply_idx // 2 + 1),
+                    moveNumber=(ply_idx + 1) // 2,
                     player="white" if (ply_idx % 2 == 1) else "black",
                     captured=is_capture,
                     tag=move_tag,
@@ -294,27 +323,16 @@ class TimelineBuilder:
                 scenes.append(main_scene.dict())
                 total_ms += main_duration
 
-                # Alt previews (only on meaningful moves):
-                #   - after opening phase
-                #   - when played move is a clear blunder (drop >= 3 pawns vs best)
-                #   - or when a mating line exists (for/against)
-                # We already computed infos_pre above for tag; reuse variable
-
+                # Alt previews ("what could have been better"): shown after the opening
+                # whenever the played move loses meaningful ground vs the engine's best,
+                # or when a forced mate is on the board.
                 allow_alt = False
-                MIN_PLY_FOR_ALT = 10  # show alts only after 5 full moves
-                BLUNDER_DROP_CP = 300  # ~3 pawns worse than best line
 
-                if ply_idx >= MIN_PLY_FOR_ALT and infos_pre:
-                    best_cp_pre, best_mate_pre = self._extract_cp_mate(infos_pre[0], pov=board_before.turn)
-                    # cp after the played move from the mover's POV (negate post side-to-move POV)
-                    mover_cp_after = (-best_cp_post) if best_cp_post is not None else None
-
+                if ply_idx >= min_ply_for_alt and infos_pre:
                     if _best_mate_post is not None or best_mate_pre is not None:
                         allow_alt = True
-                    elif best_cp_pre is not None and mover_cp_after is not None:
-                        delta = mover_cp_after - best_cp_pre
-                        if delta <= -BLUNDER_DROP_CP:
-                            allow_alt = True
+                    elif delta is not None and delta <= -alt_drop_cp:
+                        allow_alt = True
 
                 if allow_alt:
                     # Skip PV #1 (best); take next best up to alt_max
@@ -348,7 +366,7 @@ class TimelineBuilder:
         # Write debug rows if present
         try:
             if self.debug_rows:
-                out_path = Path(settings.OUTPUTS_DIR if hasattr(settings, 'OUTPUTS_DIR') else Path(__file__).resolve().parents[3] / 'outputs')
+                out_path = Path(getattr(settings, 'OUTPUT_DIR', None) or Path(__file__).resolve().parents[3] / 'outputs')
                 out_path.mkdir(parents=True, exist_ok=True)
                 dbg = out_path / 'tag_debug.json'
                 with open(dbg, 'w', encoding='utf-8') as f:

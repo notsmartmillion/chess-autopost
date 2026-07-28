@@ -35,7 +35,8 @@ def test_timeline_from_pgn_with_alts_and_pins():
     pgn = "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *"
     builder = TimelineBuilder(engine=FakeEngine())
 
-    tl = builder.from_pgn(pgn, alt_preview_plies=2, alt_max=2)
+    # Relax the alt gating so this short test game still produces alt scenes
+    tl = builder.from_pgn(pgn, alt_preview_plies=2, alt_max=2, min_ply_for_alt=1, alt_drop_cp=0)
     assert tl.scenes, "No scenes produced"
     # There should be main scenes for each ply and alt + reset scenes
     types = [s["type"] for s in tl.scenes]

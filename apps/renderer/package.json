@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "preview": "remotion preview src/index.tsx",
-    "render": "remotion render src/index.tsx ChessVideo --codec=h264 --crf=18 --quality=80 --overwrite --out=out/video.mp4",
+    "preview": "remotion studio src/index.tsx",
+    "render": "remotion render src/index.tsx ChessVideo --codec=h264 --crf=18 --overwrite --output=out/video.mp4",
+    "render:thumb": "remotion still src/index.tsx Thumbnail out/thumbnail.png --frame=12 --overwrite",
     "build": "tsc --noEmit",
     "fetch-pieces": "node scripts/fetch-pieces.mjs"
   },

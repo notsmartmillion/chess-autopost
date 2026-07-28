@@ -1,14 +1,21 @@
-import React, {useEffect, useMemo, useState} from 'react';
-import {Audio, Sequence, staticFile, useVideoConfig, useCurrentFrame, spring, interpolate, Easing} from 'remotion';
+import React, {useMemo} from 'react';
+import {Audio, Sequence, staticFile, useVideoConfig, useCurrentFrame, interpolate, Easing} from 'remotion';
 import {EvalBar} from '../components/EvalBar';
 import {PortraitPanel} from '../components/PortraitPanel';
-import {Timeline, Scene} from '../types/timeline';
+import {Timeline, Scene, SceneMain, SceneAlt} from '../types/timeline';
 import {Board} from '../components/Board';
 import {SceneMainMove} from '../scenes/SceneMainMove';
+import {SceneAltPreview} from '../scenes/SceneAltPreview';
+import {SceneReset} from '../scenes/SceneReset';
 
-type Props = {
+export type Durations = Record<string, number>;
+
+export type ChessVideoProps = {
   /** Base path for audio files in /public (default: /audio) */
   audioBase?: string;
+  /** Injected by calculateMetadata in index.tsx */
+  timeline?: Timeline | null;
+  durations?: Durations | null;
 };
 
 const SAFE_FALLBACK: Timeline = {
@@ -17,177 +24,175 @@ const SAFE_FALLBACK: Timeline = {
   totalDurationMs: 0,
 };
 
-async function loadTimelineJsonSafe(): Promise<Timeline> {
-  try {
-    const url = staticFile('timeline.json');
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.warn(`timeline.json not found at ${url} (${res.status})`);
-      return SAFE_FALLBACK;
-    }
-    return (await res.json()) as Timeline;
-  } catch (e) {
-    console.warn('Failed to fetch timeline.json:', e);
-    return SAFE_FALLBACK;
-  }
-}
+const BOARD_SIZE = 720;
 
-type Durations = Record<string, number>;
+type Seg = {
+  scene: Scene;
+  from: number;
+  durationInFrames: number;
+  /** FEN of the most recent main scene at/before this segment (post-move position) */
+  baseFen: string | null;
+  /** Eval + id of the most recent main scene, for the persistent eval bar */
+  lastMainEval: number;
+  lastMainId: string;
+};
 
-async function loadDurationsSafe(): Promise<Durations> {
-  try {
-    const url = staticFile('audio_durations.json');
-    const res = await fetch(url);
-    if (!res.ok) return {};
-    return (await res.json()) as Durations;
-  } catch {
-    return {};
-  }
-}
-
-export const ChessVideo: React.FC<Props> = ({audioBase = '/audio'}) => {
+export const ChessVideo: React.FC<ChessVideoProps> = ({
+  audioBase = '/audio',
+  timeline: timelineProp,
+  durations: durationsProp,
+}) => {
   const {fps} = useVideoConfig();
-  const [timeline, setTimeline] = useState<Timeline>(SAFE_FALLBACK);
-  const [durations, setDurations] = useState<Durations>({});
-
-  // Load timeline once; stay graceful if it's missing
-  useEffect(() => {
-    let cancelled = false;
-    loadTimelineJsonSafe().then((t) => {
-      if (!cancelled) setTimeline(t);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Load measured audio durations (optional)
-  useEffect(() => {
-    let cancelled = false;
-    loadDurationsSafe().then((d) => {
-      if (!cancelled) setDurations(d);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Always compute segments, even with empty scenes, so hooks order is stable
-  const segments = useMemo(() => {
-    let cursor = 0;
-    const scenes = timeline?.scenes ?? [];
-    return scenes.map((s) => {
-      const frames = Math.max(1, Math.round(((s.durationMs ?? 0) * fps) / 1000));
-      const seg = {scene: s as Scene, from: cursor, durationInFrames: frames};
-      cursor += frames;
-      return seg;
-    });
-  }, [timeline, fps]);
-
-  const noData = !timeline || (timeline.scenes ?? []).length === 0;
-  
-  // Only main scenes for this pass (visual + audio)
-  const mainSegments = useMemo(() => segments.filter((seg) => (seg.scene as any).type === 'main'), [segments]);
   const frame = useCurrentFrame();
-  const { currentSegId, currentEvalTarget, currentFromFrame, currentDurationFrames, prevEvalTarget } = useMemo(() => {
-    let cursor = 0;
-    for (let i = 0; i < mainSegments.length; i++) {
-      const seg = mainSegments[i];
-      const end = cursor + seg.durationInFrames;
-      if (frame < end) {
-        return {
-          currentSegId: (seg.scene as any).id as string,
-          currentEvalTarget: (((seg.scene as any).evalBarTarget as number) ?? 0) as number,
-          currentFromFrame: cursor,
-          currentDurationFrames: seg.durationInFrames,
-          prevEvalTarget: i > 0 ? (((mainSegments[i-1].scene as any).evalBarTarget as number) ?? 0) : 0,
-        };
-      }
-      cursor = end;
-    }
-    const last = mainSegments[mainSegments.length - 1]?.scene as any;
-    return {
-      currentSegId: (last?.id as string) ?? 'end',
-      currentEvalTarget: (last?.evalBarTarget as number) ?? 0,
-      currentFromFrame: 0,
-      currentDurationFrames: 1,
-      prevEvalTarget: 0,
-    };
-  }, [frame, mainSegments]);
 
-  // Smooth the eval transition from previous -> current using a gentle spring
-  const relFrame = Math.max(0, frame - (currentFromFrame ?? 0));
-  const deadBand = 0.015;
-  const quantize = (v: number, step = 0.02) => Math.round(v / step) * step;
-  const fromEval = quantize(Math.max(-1, Math.min(1, prevEvalTarget ?? 0)));
-  const toEvalRaw = Math.max(-1, Math.min(1, currentEvalTarget ?? 0));
-  const toEval = quantize(toEvalRaw);
-  const targetEval = Math.abs(toEval - fromEval) < deadBand ? fromEval : toEval;
-  const prog = spring({
-    frame: relFrame,
-    fps,
-    config: { damping: 200, stiffness: 80, mass: 0.9 },
-    durationInFrames: Math.max(10, currentDurationFrames ?? 10),
-  });
-  const eased = Easing.inOut(Easing.cubic)(prog);
-  const smoothedEval = interpolate(eased, [0, 1], [fromEval, targetEval]); // -1..+1
+  const timeline = timelineProp ?? SAFE_FALLBACK;
+  const durations = durationsProp ?? {};
+
+  const introMs = timeline.meta?.introMs ?? 0;
+  const outroMs = timeline.meta?.outroMs ?? 0;
+  const introFrames = Math.round((introMs / 1000) * fps);
+  const outroFrames = Math.round((outroMs / 1000) * fps);
+
+  // Single pass over ALL scenes (main + alt + reset) with one global cursor,
+  // offset by the intro. This keeps board, overlays, audio and eval bar in
+  // exactly the same coordinate system.
+  const segments: Seg[] = useMemo(() => {
+    let cursor = introFrames;
+    let baseFen: string | null = null;
+    let lastMainEval = 0;
+    let lastMainId = 'start';
+    const out: Seg[] = [];
+    for (const s of timeline.scenes ?? []) {
+      const frames = Math.max(1, Math.round(((s.durationMs ?? 0) * fps) / 1000));
+      if (s.type === 'main') {
+        baseFen = s.fen;
+        lastMainEval = s.evalBarTarget ?? 0;
+        lastMainId = s.id;
+      }
+      out.push({scene: s, from: cursor, durationInFrames: frames, baseFen, lastMainEval, lastMainId});
+      cursor += frames;
+    }
+    return out;
+  }, [timeline, fps, introFrames]);
+
+  const totalSceneFrames = segments.length
+    ? segments[segments.length - 1].from + segments[segments.length - 1].durationInFrames
+    : introFrames;
+  const outroStart = totalSceneFrames;
+
+  const noData = (timeline.scenes ?? []).length === 0;
+
+  // Current segment at this frame (for the persistent board + eval bar).
+  const current = useMemo(() => {
+    for (const seg of segments) {
+      if (frame < seg.from + seg.durationInFrames) return seg;
+    }
+    return segments[segments.length - 1] ?? null;
+  }, [frame, segments]);
+
+  const mainSegments = useMemo(
+    () => segments.filter((seg): seg is Seg & {scene: SceneMain} => seg.scene.type === 'main'),
+    [segments]
+  );
+
+  // Previous main scene for each main scene id (for heatmap diffing).
+  const prevAttackedById = useMemo(() => {
+    const map: Record<string, SceneMain['attacked'] | undefined> = {};
+    for (let i = 0; i < mainSegments.length; i++) {
+      map[mainSegments[i].scene.id] = i > 0 ? mainSegments[i - 1].scene.attacked : undefined;
+    }
+    return map;
+  }, [mainSegments]);
+
+  const white = timeline.meta?.white ?? 'White';
+  const black = timeline.meta?.black ?? 'Black';
+
+  // Intro/outro fades
+  const inIntro = frame < introFrames;
+  const inOutro = frame >= outroStart;
+
+  const currentScene = current?.scene ?? null;
+  const boardFen =
+    currentScene?.type === 'main'
+      ? currentScene.fen
+      : current?.baseFen ?? null;
+
+  const currentMain: SceneMain | null =
+    currentScene?.type === 'main' ? currentScene : null;
+
+  // Move caption: show the move being played (or the line being previewed)
+  const caption = useMemo(() => {
+    if (!currentScene) return null;
+    if (currentScene.type === 'main') {
+      const s = currentScene;
+      const n = s.moveNumber ? `${s.moveNumber}${s.player === 'black' ? '…' : '.'}` : '';
+      return `${n} ${s.move}`;
+    }
+    if (currentScene.type === 'alt') {
+      const s = currentScene as SceneAlt;
+      return `Engine line: ${s.pv?.slice(0, 3).join(' ') ?? ''}`;
+    }
+    return null;
+  }, [currentScene]);
 
   return (
-    <div style={{width: '100%', height: '100%', backgroundColor: '#1a1a1a', position: 'relative', display:'flex', alignItems:'center', justifyContent:'center'}}>
+    <div
+      style={{
+        width: '100%',
+        height: '100%',
+        backgroundColor: '#1a1a1a',
+        position: 'relative',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
       {/* Persistent chrome */}
-      {!noData && (
-        <div style={{position:'absolute', top: 16, left: 16, right: 16}}>
-          <PortraitPanel whitePlayer={(timeline.meta as any).white} blackPlayer={(timeline.meta as any).black} currentPlayer={undefined} />
+      {!noData && !inIntro && !inOutro && (
+        <div style={{position: 'absolute', top: 16, left: 16, right: 16}}>
+          <PortraitPanel
+            whitePlayer={white}
+            blackPlayer={black}
+            currentPlayer={currentMain?.player}
+          />
         </div>
       )}
 
       {/* Board container (stable) */}
-      <div style={{position:'relative', width: 720, height: 720}}>
-        {/* Persistent board driven by the current scene's FEN */}
-        {!noData && (() => {
-          // Determine current FEN based on frame
-          let cursor = 0;
-          for (let i = 0; i < mainSegments.length; i++) {
-            const seg = mainSegments[i];
-            const end = cursor + seg.durationInFrames;
-            if (frame < end) {
-              return <Board fen={(seg.scene as any).fen} size={720} showCoordinates={true} />;
-            }
-            cursor = end;
-          }
-          const last = mainSegments[mainSegments.length - 1];
-          return last ? <Board fen={(last.scene as any).fen} size={720} showCoordinates={true} /> : null;
-        })()}
+      <div style={{position: 'relative', width: BOARD_SIZE, height: BOARD_SIZE}}>
+        {/* Persistent board driven by the current segment's base FEN */}
+        {!noData && boardFen && !inIntro && !inOutro && (
+          <Board fen={boardFen} size={BOARD_SIZE} showCoordinates={true} />
+        )}
 
         {!noData &&
-          mainSegments.map(({scene, from, durationInFrames}) => {
+          segments.map(({scene, from, durationInFrames}) => {
+            const hasAudio = Boolean(durations[scene.id]);
             const audioSrc = staticFile(`${audioBase}/${scene.id}.wav`);
-
-            const endAt =
-              durations[scene.id]
-                ? Math.min(
-                    durationInFrames,
-                    Math.max(1, Math.round((durations[scene.id] / 1000) * fps))
-                  )
-                : durationInFrames;
+            const endAt = hasAudio
+              ? Math.min(durationInFrames, Math.max(1, Math.round((durations[scene.id] / 1000) * fps)))
+              : durationInFrames;
 
             return (
               <React.Fragment key={scene.id}>
                 <Sequence from={from} durationInFrames={durationInFrames}>
-                  {/* Render overlays only; board is persistent */}
-                  <SceneMainMove
-                    scene={{
-                      ...(scene as any),
-                      prevAttacked: (mainSegments.find((s) => s.from + s.durationInFrames === from)?.scene as any)?.attacked,
-                      captured: Boolean((scene as any).captured),
-                    }}
-                    timeline={timeline}
-                    showChrome={false}
-                    renderBoard={false}
-                  />
+                  {scene.type === 'main' && (
+                    <SceneMainMove
+                      scene={{
+                        ...scene,
+                        prevAttacked: prevAttackedById[scene.id],
+                        captured: Boolean(scene.captured),
+                      } as SceneMain}
+                      timeline={{meta: {white, black}}}
+                      showChrome={false}
+                      renderBoard={false}
+                    />
+                  )}
+                  {scene.type === 'alt' && <SceneAltPreview scene={scene} size={BOARD_SIZE} />}
+                  {scene.type === 'reset' && <SceneReset scene={scene} />}
                 </Sequence>
 
-                {durations[scene.id] && (
+                {hasAudio && (
                   <Sequence from={from} durationInFrames={endAt}>
                     <Audio src={audioSrc} endAt={endAt} />
                   </Sequence>
@@ -198,13 +203,68 @@ export const ChessVideo: React.FC<Props> = ({audioBase = '/audio'}) => {
       </div>
 
       {/* Persistent vertical eval bar to the right of board */}
-      {!noData && (
+      {!noData && !inIntro && !inOutro && (
         <div style={{marginLeft: 12}}>
-          {/* changeKey is the current main scene id at the current frame for stable, per-move tweening */}
-          <EvalBar target={currentEvalTarget} orientation="vertical" width={36} height={720} smoothingFrames={90} startDelayFrames={6} showValue={false} changeKey={currentSegId} />
+          <EvalBar
+            target={current?.lastMainEval ?? 0}
+            orientation="vertical"
+            width={36}
+            height={BOARD_SIZE}
+            smoothingFrames={90}
+            startDelayFrames={6}
+            showValue={false}
+            changeKey={current?.lastMainId ?? 'start'}
+          />
         </div>
       )}
-      
+
+      {/* Move caption under the board */}
+      {!noData && caption && !inIntro && !inOutro && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 40,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            color: '#fff',
+            fontFamily: 'system-ui, sans-serif',
+            fontSize: 30,
+            fontWeight: 700,
+            letterSpacing: 0.5,
+            padding: '8px 20px',
+            borderRadius: 12,
+            background: 'rgba(0,0,0,0.55)',
+          }}
+        >
+          {caption}
+        </div>
+      )}
+
+      {/* Intro card + narration */}
+      {introFrames > 0 && (
+        <Sequence from={0} durationInFrames={introFrames}>
+          <IntroOutroCard
+            title={`${white} vs ${black}`}
+            subtitle={[timeline.meta?.event, timeline.meta?.date].filter(Boolean).join(' · ') || undefined}
+            fadeFrames={Math.min(15, Math.floor(introFrames / 3))}
+            totalFrames={introFrames}
+          />
+          <Audio src={staticFile(`${audioBase}/intro.wav`)} />
+        </Sequence>
+      )}
+
+      {/* Outro card + narration */}
+      {outroFrames > 0 && (
+        <Sequence from={outroStart} durationInFrames={outroFrames}>
+          <IntroOutroCard
+            title="Thanks for watching"
+            subtitle={timeline.meta?.result ? `Result: ${timeline.meta.result}` : undefined}
+            fadeFrames={Math.min(15, Math.floor(outroFrames / 3))}
+            totalFrames={outroFrames}
+          />
+          <Audio src={staticFile(`${audioBase}/outro.wav`)} />
+        </Sequence>
+      )}
 
       {/* Friendly overlay when timeline.json is missing */}
       {noData && (
@@ -234,6 +294,43 @@ export const ChessVideo: React.FC<Props> = ({audioBase = '/audio'}) => {
           </div>
         </div>
       )}
+    </div>
+  );
+};
+
+const IntroOutroCard: React.FC<{
+  title: string;
+  subtitle?: string;
+  fadeFrames: number;
+  totalFrames: number;
+}> = ({title, subtitle, fadeFrames, totalFrames}) => {
+  const frame = useCurrentFrame();
+  const opacity = interpolate(
+    frame,
+    [0, fadeFrames, Math.max(fadeFrames + 1, totalFrames - fadeFrames), totalFrames],
+    [0, 1, 1, 0],
+    {extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.inOut(Easing.cubic)}
+  );
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        inset: 0,
+        background: '#0f0f12',
+        color: 'white',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: 'system-ui, Segoe UI, sans-serif',
+        letterSpacing: 0.3,
+        opacity,
+        zIndex: 20,
+      }}
+    >
+      <div style={{textAlign: 'center'}}>
+        <div style={{fontSize: 64, fontWeight: 800, marginBottom: 18}}>{title}</div>
+        {subtitle && <div style={{fontSize: 28, opacity: 0.8}}>{subtitle}</div>}
+      </div>
     </div>
   );
 };

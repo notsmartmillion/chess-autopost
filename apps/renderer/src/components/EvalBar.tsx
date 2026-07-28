@@ -58,13 +58,13 @@ export const EvalBar: React.FC<EvalBarProps> = ({
     const whiteHeight = (pct / 100) * h;
     const blackHeight = h - whiteHeight;
     return (
-      <div style={{width: w, height: h, position:'relative', borderRadius: 12, overflow:'hidden', border:'2px solid #444', background:'#2c2c2c', ...style}}>
+      <div style={{width: w, height: h, position:'relative', borderRadius: 12, overflow:'hidden', border:'2px solid #6b5b4d', background:'#1d1512', boxShadow:'0 6px 18px rgba(0,0,0,0.45)', ...style}}>
         {/* Black on top */}
-        <div style={{position:'absolute', top:0, left:0, width:'100%', height:blackHeight, background:'#333'}}/>
+        <div style={{position:'absolute', top:0, left:0, width:'100%', height:blackHeight, background:'#22201e'}}/>
         {/* White on bottom */}
-        <div style={{position:'absolute', bottom:0, left:0, width:'100%', height:whiteHeight, background:'#e0e0e0'}}/>
+        <div style={{position:'absolute', bottom:0, left:0, width:'100%', height:whiteHeight, background:'#f4efe6'}}/>
         {/* Middle line */}
-        <div style={{position:'absolute', left:0, top:'50%', width:'100%', height:2, background:'#fff', opacity:0.6, transform:'translateY(-50%)'}}/>
+        <div style={{position:'absolute', left:0, top:'50%', width:'100%', height:2, background:'#ff6a3d', opacity:0.85, transform:'translateY(-50%)'}}/>
         {showValue && (
           <div style={{position:'absolute', left:'50%', bottom: whiteHeight + 8, transform:'translateX(-50%)', color:'#fff', fontSize:12}}>
             {`${pct.toFixed(0)}%`}
@@ -76,10 +76,10 @@ export const EvalBar: React.FC<EvalBarProps> = ({
 
   // Horizontal (default)
   return (
-    <div style={{width, height, position:'relative', borderRadius: height/2, overflow:'hidden', border:'2px solid #444', background:'#2c2c2c', ...style}}>
-      <div style={{position:'absolute', top:0, left:0, height:'100%', width:`${100 - pct}%`, background:'#333'}}/>
-      <div style={{position:'absolute', top:0, left:`${100 - pct}%`, height:'100%', width:`${pct}%`, background:'#e0e0e0'}}/>
-      <div style={{position:'absolute', top:0, left:'50%', width:2, height:'100%', background:'#fff', opacity:0.6, transform:'translateX(-50%)'}}/>
+    <div style={{width, height, position:'relative', borderRadius: height/2, overflow:'hidden', border:'2px solid #6b5b4d', background:'#1d1512', boxShadow:'0 6px 18px rgba(0,0,0,0.45)', ...style}}>
+      <div style={{position:'absolute', top:0, left:0, height:'100%', width:`${100 - pct}%`, background:'#22201e'}}/>
+      <div style={{position:'absolute', top:0, left:`${100 - pct}%`, height:'100%', width:`${pct}%`, background:'#f4efe6'}}/>
+      <div style={{position:'absolute', top:0, left:'50%', width:2, height:'100%', background:'#ff6a3d', opacity:0.85, transform:'translateX(-50%)'}}/>
       {showValue && (
         <div style={{position:'absolute', top:'50%', left:'50%', transform:'translate(-50%, -50%)', fontWeight:'bold', color:'#fff', textShadow:'1px 1px 2px #000'}}>
           {`White ${pct.toFixed(0)}%`}

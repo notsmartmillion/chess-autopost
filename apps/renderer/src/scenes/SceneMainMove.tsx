@@ -164,7 +164,8 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline, s
             square={scene.lastMoveArrow[0]}
             boardSize={720}
             squareSize={90}
-            theme="yellow"
+            color="rgba(255, 204, 0, 0.45)"
+            borderColor="rgba(255, 204, 0, 0.95)"
             borderWidth={3}
           />
           {/* Destination (after): red if capture, else yellow */}
@@ -172,7 +173,8 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline, s
             square={scene.lastMoveArrow[1]}
             boardSize={720}
             squareSize={90}
-            theme={(scene as any).captured ? 'red' : 'yellow'}
+            color={(scene as any).captured ? 'rgba(220, 53, 69, 0.45)' : 'rgba(255, 204, 0, 0.5)'}
+            borderColor={(scene as any).captured ? 'rgba(220, 53, 69, 0.95)' : 'rgba(255, 204, 0, 0.95)'}
             borderWidth={4}
           />
         </div>
@@ -244,7 +246,7 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline, s
       {/* Per-move engine tag badge at destination square (top-right of the square) */}
       {(() => {
         const tag = (scene as any).tag as string | undefined;
-        const allowed = new Set(['brilliant', 'great', 'inaccuracy', 'blunder']);
+        const allowed = new Set(['brilliant', 'great', 'inaccuracy', 'mistake', 'blunder']);
         if (!tag || !allowed.has(tag)) return null;
         const to = scene.lastMoveArrow[1];
         const file = to.charCodeAt(0) - 97; // a=0
@@ -252,10 +254,15 @@ export const SceneMainMove: React.FC<SceneMainMoveProps> = ({ scene, timeline, s
         const squareSize = 90;
         const x = file * squareSize;
         const y = rank * squareSize;
-        const token = tag === 'brilliant' ? '!!' : tag === 'great' ? '!' : tag === 'blunder' ? '??' : '!?';
+        const token = tag === 'brilliant' ? '!!'
+                    : tag === 'great' ? '!'
+                    : tag === 'blunder' ? '??'
+                    : tag === 'mistake' ? '?'
+                    : '!?';
         const bg = tag === 'brilliant' ? 'rgba(0, 199, 160, 0.95)'
                  : tag === 'great' ? 'rgba(255, 193, 7, 0.95)'
                  : tag === 'inaccuracy' ? 'rgba(255, 165, 0, 0.95)'
+                 : tag === 'mistake' ? 'rgba(255, 120, 40, 0.95)'
                  : 'rgba(220, 53, 69, 0.95)';
         return (
           <div

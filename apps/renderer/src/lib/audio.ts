@@ -65,34 +65,6 @@ export function calculateSceneDuration(
   return Math.max(minDuration, Math.min(maxDuration, total));
 }
 
-/**
- * Animation timing based on cueTimes (seconds from scene start) or a
- * fallback percentage of the scene duration.
- *
- * FIXED: Previously, fallbackPercent was returned as-is and treated as ms.
- * Now we convert fallbackPercent -> ms correctly.
- */
-export function getAnimationTiming(
-  sceneDurationMs: number,
-  cueTimes: Record<string, number> | undefined,
-  keyword: string,
-  fallbackPercent: number = 0.5,
-  fps: number = 30
-): {
-  startFrame: number;
-  endFrame: number;
-  durationFrames: number;
-} {
-  // If cueTimes present, we treat value as SECONDS from scene start (pipeline convention).
-  // Otherwise, fall back to a fraction of the scene duration.
-  const startMs =
-    cueTimes && typeof cueTimes[keyword] === 'number'
-      ? cueTimes[keyword] * 1000
-      : sceneDurationMs * fallbackPercent;
-
-  const startFrame = Math.max(0, timeToFrame(startMs, fps));
-  const endFrame = Math.max(startFrame + 1, timeToFrame(sceneDurationMs, fps));
-  const durationFrames = Math.max(1, endFrame - startFrame);
-
-  return {startFrame, endFrame, durationFrames};
-}
+// Single source of truth for cue-based animation timing.
+// Cue values are FRACTIONS of scene duration (0..1) — see audio-browser.ts.
+export {getAnimationTiming} from './audio-browser';

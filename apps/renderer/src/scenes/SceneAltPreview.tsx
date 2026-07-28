@@ -1,31 +1,35 @@
-import React, {useEffect, useMemo} from 'react';
-import {useCurrentFrame, useVideoConfig} from 'remotion';
+import React, {useMemo} from 'react';
+import {useCurrentFrame, useVideoConfig, interpolate, Easing} from 'remotion';
 import {Chess} from 'chess.js';
 import type {SceneAlt} from '../types/timeline';
-import {getAnimationTiming} from '../lib/audio';
-import {Board} from '../components/Board'; // expects props { fen: string; arrows?: {from:string;to:string}[] }
+import {getAnimationTiming} from '../lib/audio-browser';
+import {Board} from '../components/Board';
 
-type Props = { scene: SceneAlt };
+type Props = {scene: SceneAlt; size?: number};
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
-export const SceneAltPreview: React.FC<Props> = ({scene}) => {
+/**
+ * "What could have been better" preview: steps through the engine's suggested
+ * line (PV) from the branch-point position, one snapshot at a time, with an
+ * arrow for each step. Rendered as an overlay covering the persistent board.
+ */
+export const SceneAltPreview: React.FC<Props> = ({scene, size = 720}) => {
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
 
-  // 1) Seed from the PRE-MOVE branch FEN (added to SceneAlt by the timeline builder).
+  // Seed from the PRE-MOVE branch FEN written by the timeline builder.
   const baseFen =
     typeof scene.fen === 'string' && scene.fen.trim().length > 0 ? scene.fen : undefined;
 
-  // 2) Normalize PV (SAN) and precompute FEN snapshots while applying PV from the base position.
-  //    Length will be pv.length + 1 (initial + each applied move).
+  // Precompute FEN snapshots while applying the PV from the base position.
   const pvFenSeq = useMemo(() => {
     const seq: {fen: string}[] = [];
-    const ch = new Chess(baseFen); // undefined means start pos; otherwise seed from given FEN
+    const ch = new Chess(baseFen);
     seq.push({fen: ch.fen()});
     for (const san of scene.pv?.slice(0, 3) ?? []) {
       try {
-        const m = ch.move(san, {sloppy: true});
+        const m = ch.move(san); // chess.js v1: SAN accepted directly
         if (!m) break;
         seq.push({fen: ch.fen()});
       } catch {
@@ -35,74 +39,71 @@ export const SceneAltPreview: React.FC<Props> = ({scene}) => {
     return seq;
   }, [baseFen, scene.pv]);
 
-  // 3) Decide when the PV should start revealing & how fast to advance through snapshots.
-  //    We consume the frames AFTER the 'alt' cue; split evenly across snapshots.
+  // Reveal timing: consume frames after the 'alt' cue; split evenly across snapshots.
   const totalMs = scene.durationMs ?? 1200;
   const cue = getAnimationTiming(totalMs, scene.cueTimes, 'alt', 0.08, fps);
   const framesAvailable = Math.max(1, cue.durationFrames);
   const snaps = Math.max(1, pvFenSeq.length);
   const perSnap = Math.max(1, Math.floor(framesAvailable / snaps));
 
-  // 4) Determine which snapshot is visible at the current frame.
   const currentSnapIdx = useMemo(() => {
     if (frame < cue.startFrame) return 0;
     const progressed = frame - cue.startFrame;
     return clamp(Math.floor(progressed / perSnap), 0, pvFenSeq.length - 1);
   }, [frame, cue.startFrame, perSnap, pvFenSeq.length]);
 
-  // Current board FEN
   const fen = pvFenSeq[currentSnapIdx]?.fen ?? baseFen ?? new Chess().fen();
 
-  // 5) Choose the arrow for the current step (comes from timeline: scene.arrows[i] for snapshot i+1).
-  //    When currentSnapIdx === 0, we’re at the base; otherwise show the (idx-1)-th arrow.
-  const arrowForStep =
-    currentSnapIdx > 0 ? scene.arrows?.[currentSnapIdx - 1] : undefined;
-
-  // Convert timeline arrow (['e2','e4']) into Board prop shape if needed
+  // Arrow for the current step (scene.arrows[i] corresponds to snapshot i+1).
+  const arrowForStep = currentSnapIdx > 0 ? scene.arrows?.[currentSnapIdx - 1] : scene.arrows?.[0];
   const arrows =
     arrowForStep && Array.isArray(arrowForStep) && arrowForStep.length === 2
       ? [{from: arrowForStep[0], to: arrowForStep[1]}]
       : undefined;
 
-  // Small helper to format cp/mate nicely
+  const fadeIn = interpolate(frame, [0, 8], [0, 1], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+    easing: Easing.out(Easing.cubic),
+  });
+
   const evalBadge =
     scene.mate != null
-      ? ` · #${scene.mate}`
+      ? ` · mate in ${Math.abs(scene.mate)}`
       : scene.cp != null
-        ? ` · ${(scene.cp >= 0 ? '+' : '')}${(scene.cp / 100).toFixed(2)}`
+        ? ` · ${scene.cp >= 0 ? '+' : ''}${(scene.cp / 100).toFixed(1)}`
         : '';
 
   return (
     <div
       style={{
-        width: '100%',
-        height: '100%',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        position: 'relative',
+        position: 'absolute',
+        inset: 0,
+        opacity: fadeIn,
       }}
     >
-      {/* Floating label */}
+      <Board fen={fen} size={size} showCoordinates={true} arrows={arrows} />
+
+      {/* "Better was..." label */}
       <div
         style={{
           position: 'absolute',
-          top: 24,
+          top: -54,
           left: '50%',
           transform: 'translateX(-50%)',
+          whiteSpace: 'nowrap',
           color: '#fff',
           fontFamily: 'system-ui, sans-serif',
-          fontSize: 18,
-          padding: '6px 10px',
+          fontSize: 22,
+          fontWeight: 700,
+          padding: '8px 14px',
           borderRadius: 10,
           border: '2px solid #ff6a3d',
-          background: 'rgba(0,0,0,0.35)',
+          background: 'rgba(15, 15, 18, 0.9)',
         }}
       >
-        {(scene.label ?? 'Alt') + evalBadge}
+        {`Better was ${scene.pv?.[0] ?? ''}${evalBadge}`}
       </div>
-
-      <Board fen={fen} arrows={arrows} />
     </div>
   );
 };

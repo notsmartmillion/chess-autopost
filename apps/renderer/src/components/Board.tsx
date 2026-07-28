@@ -1,23 +1,23 @@
 import React from 'react';
-import { useCurrentFrame, useVideoConfig } from 'remotion';
 import { PieceSprites } from './PieceSprites';
+import { Arrow } from './Arrow';
 
 interface BoardProps {
   fen: string;
   size?: number;
   showCoordinates?: boolean;
+  arrows?: { from: string; to: string; color?: string }[];
   style?: React.CSSProperties;
 }
 
-export const Board: React.FC<BoardProps> = ({ 
-  fen, 
-  size = 400, 
+export const Board: React.FC<BoardProps> = ({
+  fen,
+  size = 400,
   showCoordinates = true,
+  arrows,
   style = {}
 }) => {
-  const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
-  
+
   // Parse FEN
   const [position, activeColor, castling, enPassant, halfmove, fullmove] = fen.split(' ');
   
@@ -115,6 +115,19 @@ export const Board: React.FC<BoardProps> = ({
           );
         })
       )}
+
+      {/* Optional arrow overlays (e.g., alternative-line previews) */}
+      {arrows?.map((a, i) => (
+        <Arrow
+          key={`${a.from}-${a.to}-${i}`}
+          from={a.from}
+          to={a.to}
+          color={a.color ?? '#ff6a3d'}
+          boardSize={size}
+          squareSize={squareSize}
+          duration={8}
+        />
+      ))}
     </div>
   );
 };

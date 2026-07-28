@@ -52,8 +52,44 @@ export const Arrow: React.FC<ArrowProps> = ({
   const dx = toCoords.x - fromCoords.x;
   const dy = toCoords.y - fromCoords.y;
   const length = Math.sqrt(dx * dx + dy * dy);
-  const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-  
+
+  // Decide if we draw straight or "L" shaped (for knight moves)
+  const df = Math.abs(toFile - fromFile);
+  const dr = Math.abs(toRank - fromRank);
+  const isKnightMove = (df === 1 && dr === 2) || (df === 2 && dr === 1);
+
+  // For an L-shaped arrow the head arrives along the *last* leg, so the shaft
+  // direction — not the straight line between the squares — decides its angle.
+  const goHorizontalLast = df > dr;
+  const mid = isKnightMove
+    ? goHorizontalLast
+      ? { x: toCoords.x, y: fromCoords.y } // vertical first, then horizontal
+      : { x: fromCoords.x, y: toCoords.y } // horizontal first, then vertical
+    : fromCoords;
+
+  const angle =
+    Math.atan2(toCoords.y - mid.y, toCoords.x - mid.x) * (180 / Math.PI);
+
+  // Stop short of the target square's centre: an arrow that runs to the middle
+  // of the square buries its own head under the piece it is pointing at.
+  const pullBack = (
+    ax: number, ay: number, bx: number, by: number, inset: number
+  ) => {
+    const vx = bx - ax;
+    const vy = by - ay;
+    const len = Math.hypot(vx, vy) || 1;
+    const k = Math.min(inset, len * 0.45) / len;
+    return { x: bx - vx * k, y: by - vy * k };
+  };
+
+  const tip = pullBack(mid.x, mid.y, toCoords.x, toCoords.y, squareSize * 0.34);
+  // On a straight arrow `mid` is the origin itself, so the first leg points at
+  // the destination; on an L it points at the corner.
+  const tailAnchor = isKnightMove ? mid : toCoords;
+  const tail = pullBack(
+    tailAnchor.x, tailAnchor.y, fromCoords.x, fromCoords.y, squareSize * 0.26
+  );
+
   // Animation
   const animatedOpacity = interpolate(
     frame,
@@ -69,18 +105,13 @@ export const Arrow: React.FC<ArrowProps> = ({
   const strokeWidth = weight === 'thick' ? 6 : 3; // widened shafts
   const arrowHeadSize = weight === 'thick' ? 16 : 10; // larger heads
   
-  // Arrow head points
+  // Arrow head points, seated on the shortened tip.
   const arrowHeadAngle1 = angle - 30;
   const arrowHeadAngle2 = angle + 30;
-  const arrowHead1X = toCoords.x - arrowHeadSize * Math.cos(arrowHeadAngle1 * Math.PI / 180);
-  const arrowHead1Y = toCoords.y - arrowHeadSize * Math.sin(arrowHeadAngle1 * Math.PI / 180);
-  const arrowHead2X = toCoords.x - arrowHeadSize * Math.cos(arrowHeadAngle2 * Math.PI / 180);
-  const arrowHead2Y = toCoords.y - arrowHeadSize * Math.sin(arrowHeadAngle2 * Math.PI / 180);
-  
-  // Decide if we draw straight or "L" shaped (for knight moves)
-  const df = Math.abs(toFile - fromFile);
-  const dr = Math.abs(toRank - fromRank);
-  const isKnightMove = (df === 1 && dr === 2) || (df === 2 && dr === 1);
+  const arrowHead1X = tip.x - arrowHeadSize * Math.cos(arrowHeadAngle1 * Math.PI / 180);
+  const arrowHead1Y = tip.y - arrowHeadSize * Math.sin(arrowHeadAngle1 * Math.PI / 180);
+  const arrowHead2X = tip.x - arrowHeadSize * Math.cos(arrowHeadAngle2 * Math.PI / 180);
+  const arrowHead2Y = tip.y - arrowHeadSize * Math.sin(arrowHeadAngle2 * Math.PI / 180);
 
   return (
     <div
@@ -104,47 +135,38 @@ export const Arrow: React.FC<ArrowProps> = ({
       >
         {/* Arrow shaft */}
         {isKnightMove ? (
-          (() => {
-            // Draw an L-shape: go orthogonal from start to a corner, then to destination
-            // Choose turn so the longer leg is drawn last (towards the destination)
-            const goHorizontalLast = df > dr; // if horizontal span larger
-            const mid = goHorizontalLast
-              ? { x: toCoords.x, y: fromCoords.y } // vertical first, then horizontal
-              : { x: fromCoords.x, y: toCoords.y }; // horizontal first, then vertical
-            // First segment
-            return (
-              <>
-                <line
-                  x1={fromCoords.x}
-                  y1={fromCoords.y}
-                  x2={mid.x}
-                  y2={mid.y}
-                  stroke={color}
-                  strokeWidth={strokeWidth}
-                  strokeOpacity={animatedOpacity}
-                  strokeDasharray={dashed ? '5,5' : 'none'}
-                  strokeLinecap="round"
-                />
-                <line
-                  x1={mid.x}
-                  y1={mid.y}
-                  x2={toCoords.x}
-                  y2={toCoords.y}
-                  stroke={color}
-                  strokeWidth={strokeWidth}
-                  strokeOpacity={animatedOpacity}
-                  strokeDasharray={dashed ? '5,5' : 'none'}
-                  strokeLinecap="round"
-                />
-              </>
-            );
-          })()
+          // An L-shape: orthogonal from the start to the corner, then in to the
+          // destination. Both legs are trimmed so the shaft clears the pieces.
+          <>
+            <line
+              x1={tail.x}
+              y1={tail.y}
+              x2={mid.x}
+              y2={mid.y}
+              stroke={color}
+              strokeWidth={strokeWidth}
+              strokeOpacity={animatedOpacity}
+              strokeDasharray={dashed ? '5,5' : 'none'}
+              strokeLinecap="round"
+            />
+            <line
+              x1={mid.x}
+              y1={mid.y}
+              x2={tip.x}
+              y2={tip.y}
+              stroke={color}
+              strokeWidth={strokeWidth}
+              strokeOpacity={animatedOpacity}
+              strokeDasharray={dashed ? '5,5' : 'none'}
+              strokeLinecap="round"
+            />
+          </>
         ) : (
           <line
-            x1={fromCoords.x}
-            y1={fromCoords.y}
-            x2={toCoords.x}
-            y2={toCoords.y}
+            x1={tail.x}
+            y1={tail.y}
+            x2={tip.x}
+            y2={tip.y}
             stroke={color}
             strokeWidth={strokeWidth}
             strokeOpacity={animatedOpacity}

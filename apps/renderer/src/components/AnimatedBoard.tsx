@@ -394,17 +394,32 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
   /* ------------------------------ overlays ------------------------------- */
 
   // Highlights and arrows never hard-cut in.
-  const highlightOpacity = interpolate(frame, [0, 5], [0, 1], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-    easing: Easing.out(Easing.cubic),
-  });
+  //
+  // They also must not arrive *early*. A beat can spend several seconds talking
+  // before its move is played, and lighting the from/to squares during that time
+  // announces the move before the narrator does. Fade them in with the piece.
+  const highlightOpacity = interpolate(
+    frame,
+    move ? [moveStartFrame, moveStartFrame + 5] : [0, 5],
+    [0, 1],
+    {
+      extrapolateLeft: 'clamp',
+      extrapolateRight: 'clamp',
+      easing: Easing.out(Easing.cubic),
+    }
+  );
 
-  const checkOpacity = interpolate(frame, [0, 8], [0, 1], {
-    extrapolateLeft: 'clamp',
-    extrapolateRight: 'clamp',
-    easing: Easing.out(Easing.cubic),
-  });
+  // The check only exists once the piece has landed, so the glow waits for it.
+  const checkOpacity = interpolate(
+    frame,
+    move ? [moveStartFrame + duration, moveStartFrame + duration + 8] : [0, 8],
+    [0, 1],
+    {
+      extrapolateLeft: 'clamp',
+      extrapolateRight: 'clamp',
+      easing: Easing.out(Easing.cubic),
+    }
+  );
 
   const squares = useMemo(() => {
     const cells: { key: string; x: number; y: number; light: boolean; file: string; rank: number; col: number; row: number }[] = [];
@@ -588,7 +603,9 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
                 color={a.color ?? '#5ac8fa'}
                 boardSize={size}
                 squareSize={squareSize}
-                delay={0}
+                // An arrow describes the position the move creates, so it is
+                // drawn once the piece has arrived — never before it.
+                delay={move ? moveStartFrame + duration : 0}
                 duration={6}
               />
             ) : null

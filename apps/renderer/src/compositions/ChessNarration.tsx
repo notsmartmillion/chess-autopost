@@ -13,7 +13,7 @@ import {AnimatedBoard} from '../components/AnimatedBoard';
 import {
   THEME,
   PlayerRow,
-  EvalReadout,
+  EvalColumn,
   CurrentMove,
   MoveList,
   Wordmark,
@@ -30,8 +30,12 @@ export type ChessNarrationProps = {
 const BOARD = 880;
 const BOARD_X = 96;
 const BOARD_Y = (1080 - BOARD) / 2;
-const RAIL_X = BOARD_X + BOARD + 72;
+// The eval column now lives in the gap beside the board, so the rail starts
+// further right than the board's edge alone would suggest.
+const RAIL_X = BOARD_X + BOARD + 84;
 const RAIL_W = 1920 - RAIL_X - 96;
+// Where the players panel ends and the rail below it begins.
+const PLAYERS_BOTTOM = 40 + 128 + 24;
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 const displayName = (raw?: string | null): string => {
@@ -225,37 +229,52 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
         </div>
       )}
 
+      {/* Players — top right, on the wordmark's line */}
+      <div
+        style={{
+          position: 'absolute',
+          left: RAIL_X,
+          top: 40,
+          width: RAIL_W,
+          background: THEME.panel,
+          border: `1px solid ${THEME.panelEdge}`,
+          borderRadius: 14,
+          padding: 14,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
+        <PlayerRow name={black} side="black" active={sideToMove === 'black'} />
+        <PlayerRow name={white} side="white" active={sideToMove === 'white'} />
+      </div>
+
+      {/* Evaluation — a vertical column hugging the board */}
+      <div
+        style={{
+          position: 'absolute',
+          left: BOARD_X + BOARD + 20,
+          top: BOARD_Y,
+        }}
+      >
+        <EvalColumn cp={beat.evalCp} height={BOARD - 44} />
+      </div>
+
       {/* Analysis rail */}
       <div
         style={{
           position: 'absolute',
           left: RAIL_X,
-          top: BOARD_Y,
+          top: PLAYERS_BOTTOM,
           width: RAIL_W,
-          height: BOARD,
+          height: BOARD_Y + BOARD - PLAYERS_BOTTOM,
           display: 'flex',
           flexDirection: 'column',
           gap: 20,
         }}
       >
-        <div
-          style={{
-            background: THEME.panel,
-            border: `1px solid ${THEME.panelEdge}`,
-            borderRadius: 14,
-            padding: 14,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-          }}
-        >
-          <PlayerRow name={black} side="black" active={sideToMove === 'black'} />
-          <PlayerRow name={white} side="white" active={sideToMove === 'white'} />
-        </div>
-
-        <EvalReadout cp={beat.evalCp} changeKey={beat.id} />
         <CurrentMove beat={beat} moveNumber={moveNumber} isBlack={beat.ply ? beat.ply % 2 === 0 : false} />
-        <MoveList entries={moveEntries} currentPly={beat.ply} rows={6} />
+        <MoveList entries={moveEntries} currentPly={beat.ply} rows={4} />
       </div>
 
       {/* Intro / outro card */}

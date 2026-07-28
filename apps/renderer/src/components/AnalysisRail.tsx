@@ -144,6 +144,68 @@ export const EvalReadout: React.FC<{cp: number | null; changeKey: string}> = ({c
   );
 };
 
+/**
+ * Vertical evaluation column that stands beside the board.
+ *
+ * White's share fills from the bottom, so the bar reads the same way the board
+ * does — White below, Black above — and the number sits at whichever end the
+ * advantage is, out of the board's way.
+ */
+export const EvalColumn: React.FC<{
+  cp: number | null;
+  height: number;
+  width?: number;
+}> = ({cp, height, width = 26}) => {
+  const value = cp ?? 0;
+  const pawns = value / 100;
+  const ratio = Math.max(0.02, Math.min(0.98, 0.5 + Math.tanh(value / 400) / 2));
+  const text =
+    Math.abs(pawns) < 0.05 ? '0.0' : `${pawns > 0 ? '+' : '−'}${Math.abs(pawns).toFixed(1)}`;
+  const whiteLeads = pawns >= 0;
+
+  return (
+    <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', height}}>
+      <div
+        style={{
+          position: 'relative',
+          width,
+          flex: 1,
+          borderRadius: width / 2,
+          overflow: 'hidden',
+          background: '#28313f',
+          border: `1px solid ${THEME.panelEdge}`,
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'flex-end',
+        }}
+      >
+        <div style={{height: `${ratio * 100}%`, background: '#eef2f7', width: '100%'}} />
+        {/* Midpoint tick: the eye needs a reference for "equal". */}
+        <div
+          style={{
+            position: 'absolute',
+            top: '50%',
+            left: 0,
+            width: '100%',
+            height: 1,
+            background: 'rgba(255,255,255,0.22)',
+          }}
+        />
+      </div>
+      <div
+        style={{
+          marginTop: 10,
+          fontSize: 26,
+          fontVariantNumeric: 'tabular-nums',
+          color: whiteLeads ? THEME.text : THEME.accent,
+        }}
+      >
+        {text}
+      </div>
+    </div>
+  );
+};
+
 export const CurrentMove: React.FC<{
   beat: Beat;
   moveNumber: number | null;
@@ -237,17 +299,19 @@ export const MoveList: React.FC<{
   entries: MoveListEntry[];
   currentPly: number | null;
   rows?: number;
-}> = ({entries, currentPly, rows = 6}) => {
+}> = ({entries, currentPly, rows = 4}) => {
   const currentMoveNumber = currentPly ? Math.ceil(currentPly / 2) : 0;
   const currentIsWhite = currentPly ? currentPly % 2 === 1 : true;
 
-  // Keep the current move in view near the bottom of the window.
-  const currentIndex = Math.max(
-    0,
-    entries.findIndex((e) => e.moveNumber === currentMoveNumber)
-  );
-  const start = Math.max(0, Math.min(currentIndex - rows + 2, entries.length - rows));
-  const window = entries.slice(start, start + rows);
+  // Only ever show what has actually been played. Windowing over the whole game
+  // put the next few moves on screen, so the viewer could read the continuation
+  // before the narrator reached it.
+  const played = entries
+    .filter((e) => e.moveNumber <= currentMoveNumber)
+    .map((e) =>
+      e.moveNumber === currentMoveNumber && currentIsWhite ? {...e, black: undefined} : e
+    );
+  const window = played.slice(Math.max(0, played.length - rows));
 
   return (
     <Panel style={{flex: 1, display: 'flex', flexDirection: 'column'}}>

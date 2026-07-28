@@ -71,8 +71,8 @@ export function normalizeText(text: string): string {
 /**
  * Normalize evaluation for speech
  */
-export function normalizeEvaluation(eval: string): string {
-  let normalized = eval;
+export function normalizeEvaluation(evaluation: string): string {
+  let normalized = evaluation;
   
   // Handle mate scores
   normalized = normalized.replace(/#(\d+)/g, 'mate in $1');

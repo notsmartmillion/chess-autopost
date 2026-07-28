@@ -29,7 +29,14 @@ import chess.pgn
 
 def _headers() -> Dict[str, str]:
     token = os.getenv("LICHESS_TOKEN")
-    h = {"Accept": "application/x-ndjson"}
+    h = {
+        "Accept": "application/x-ndjson",
+        # Lichess rejects requests without a descriptive User-Agent (404/403).
+        "User-Agent": os.getenv(
+            "LICHESS_USER_AGENT",
+            "chess-autopost/1.0 (+https://github.com/chess-autopost; daily video bot)",
+        ),
+    }
     if token:
         h["Authorization"] = f"Bearer {token}"
     return h
@@ -130,13 +137,20 @@ def fetch_lichess_games(
         params["until"] = _parse_date(until)
 
     out: List[Dict] = []
-    with requests.get(url, headers=_headers(), params=params, stream=True, timeout=60) as resp:
-        resp.raise_for_status()
-        for j in _iter_ndjson(resp):
-            pgn = _game_to_pgn(j)
-            out.append({"pgn": pgn, "meta": _normalize_metadata(pgn)})
-            if limit and len(out) >= limit:
-                break
+    for attempt in (1, 2):
+        with requests.get(url, headers=_headers(), params=params, stream=True, timeout=60) as resp:
+            if resp.status_code == 429 and attempt == 1:
+                # Lichess asks clients to wait a full minute after a 429.
+                print("[lichess] rate limited (429); waiting 61s before one retry…")
+                time.sleep(61)
+                continue
+            resp.raise_for_status()
+            for j in _iter_ndjson(resp):
+                pgn = _game_to_pgn(j)
+                out.append({"pgn": pgn, "meta": _normalize_metadata(pgn)})
+                if limit and len(out) >= limit:
+                    break
+        break
     return out
 
 def save_pgns(games: List[Dict], dest_dir: Path) -> List[Path]:

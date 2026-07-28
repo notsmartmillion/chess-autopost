@@ -50,8 +50,8 @@ export async function ttsBatch(
   for (const line of lines) {
     try {
       const cacheKey = getCacheKey(line.text, options);
-      const cachePath = path.join(cacheDir, `${cacheKey}.wav`);
-      const outputPath = path.join(outDir, `${line.id}.wav`);
+      const cachePath = path.join(cacheDir, `${cacheKey}.mp3`);
+      const outputPath = path.join(outDir, `${line.id}.mp3`);
       
       // Check cache first
       try {

@@ -38,7 +38,9 @@ apps/renderer/.cache/
 .env.*
 !.env.example
 
-# Outputs
+# Outputs — disposable build artifacts. NOTE: durable state deliberately lives
+# in state/ (tracked), not here, so clearing outputs/ can never cause the
+# channel to re-publish a game it has already posted.
 outputs/
 
 # Media outputs
@@ -65,6 +67,9 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/settings.json
+
+# Archived renders are large and regenerable; the ledger in state/ records them.
+outputs/videos/
 
 # Engine cache and the downloaded Stockfish binary
 cache/

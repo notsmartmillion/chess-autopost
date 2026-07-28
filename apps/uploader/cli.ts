@@ -29,6 +29,7 @@ program
   .option('-p, --privacy <status>', 'Privacy status', 'unlisted')
   .option('--publish-at <date>', 'Schedule publish date (ISO format)')
   .option('--dry-run', 'Show what would be uploaded without actually uploading')
+  .option('--result-json <file>', 'Write {videoId,url,status,title} here on success')
   .action(async (options) => {
     try {
       console.log('Loading script...');

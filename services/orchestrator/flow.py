@@ -37,7 +37,15 @@ for _stream in (sys.stdout, sys.stderr):
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "outputs"
 PGN_DAILY_DIR = OUT / "pgns" / "daily"
-STATE_FILE = OUT / "state" / "used_games.json"
+# Durable state lives OUTSIDE outputs/ deliberately. outputs/ is disposable
+# build output and is gitignored wholesale; used_games.json is the only thing
+# stopping the channel re-publishing a game it has already posted, so losing it
+# is the worst failure mode in the system. state/ is version-controlled.
+STATE_DIR = ROOT / "state"
+STATE_FILE = STATE_DIR / "used_games.json"
+LEGACY_STATE_FILE = OUT / "state" / "used_games.json"
+LEDGER_FILE = STATE_DIR / "published.json"
+VIDEO_ARCHIVE = OUT / "videos"
 LOG_DIR = OUT / "logs"
 VIDEO_PATH = ROOT / "apps" / "renderer" / "out" / "video.mp4"
 THUMBNAIL_PATH = ROOT / "apps" / "renderer" / "out" / "thumbnail.png"
@@ -88,7 +96,19 @@ def _moves_hash(pgn: str) -> str:
     return hashlib.md5(ucis.encode("utf-8")).hexdigest()
 
 
+def _migrate_state() -> None:
+    """Move state from the old outputs/ location, once."""
+    if LEGACY_STATE_FILE.exists() and not STATE_FILE.exists():
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(
+            LEGACY_STATE_FILE.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        LEGACY_STATE_FILE.unlink()
+        log(f"migrated dedupe state -> {STATE_FILE.relative_to(ROOT)}")
+
+
 def _load_used() -> Dict[str, str]:
+    _migrate_state()
     if STATE_FILE.exists():
         try:
             return json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -101,7 +121,49 @@ def _mark_used(h: str, note: str) -> None:
     used = _load_used()
     used[h] = note
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(used, indent=2), encoding="utf-8")
+    STATE_FILE.write_text(json.dumps(used, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _load_ledger() -> List[Dict]:
+    if LEDGER_FILE.exists():
+        try:
+            return json.loads(LEDGER_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def record_publication(entry: Dict) -> None:
+    """Append to the permanent record of what this pipeline produced.
+
+    Keyed by archive filename so re-running the same day updates that row
+    rather than appending a duplicate.
+    """
+    ledger = [e for e in _load_ledger() if e.get("archive") != entry.get("archive")]
+    ledger.append(entry)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    LEDGER_FILE.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
+
+
+def archive_video(pgn_path: Path) -> Optional[Path]:
+    """Keep a dated copy of the render.
+
+    Remotion writes out/video.mp4 with --overwrite, so without this the next
+    day's run destroys today's video. That matters when an upload fails: the
+    video would otherwise be unrecoverable.
+    """
+    if not VIDEO_PATH.exists():
+        return None
+    VIDEO_ARCHIVE.mkdir(parents=True, exist_ok=True)
+    dest = VIDEO_ARCHIVE / f"{pgn_path.stem}.mp4"
+    try:
+        shutil.copy2(VIDEO_PATH, dest)
+        if THUMBNAIL_PATH.exists():
+            shutil.copy2(THUMBNAIL_PATH, dest.with_suffix(".png"))
+        return dest
+    except OSError as exc:
+        log(f"could not archive video: {exc}")
+        return None
 
 
 def _score_game(meta: Dict, pgn: str) -> float:
@@ -284,15 +346,20 @@ def have_upload_creds() -> bool:
     )
 
 
-def upload_video(privacy: str, dry_run: bool = False) -> bool:
+def upload_video(privacy: str, dry_run: bool = False) -> Optional[Dict]:
+    """Upload and return the uploader's result, or None if it did not run."""
     uploader_dir = ROOT / "apps" / "uploader"
     npm = shutil.which("npm") or shutil.which("npm.cmd")
     if not npm:
         log("npm not found; skipping upload")
-        return False
+        return None
     if not (uploader_dir / "node_modules").exists():
         log("installing uploader dependencies (first run)…")
         subprocess.check_call([npm, "install", "--no-audit", "--no-fund"], cwd=str(uploader_dir))
+
+    result_path = OUT / "upload_result.json"
+    if result_path.exists():
+        result_path.unlink()
 
     cmd = [
         npm, "run", "cli", "--",
@@ -300,6 +367,7 @@ def upload_video(privacy: str, dry_run: bool = False) -> bool:
         "-v", str(VIDEO_PATH),
         "-t", str(OUT / "script.json"),
         "-p", privacy,
+        "--result-json", str(result_path),
     ]
     if THUMBNAIL_PATH.exists():
         cmd += ["-T", str(THUMBNAIL_PATH)]
@@ -307,7 +375,13 @@ def upload_video(privacy: str, dry_run: bool = False) -> bool:
         cmd.append("--dry-run")
     log("uploading to YouTube…")
     subprocess.check_call(cmd, cwd=str(uploader_dir))
-    return True
+
+    if result_path.exists():
+        try:
+            return json.loads(result_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
 
 
 def notify(text: str) -> None:
@@ -379,18 +453,49 @@ def main() -> int:
     size_mb = VIDEO_PATH.stat().st_size / 1e6
     log(f"video ready: {VIDEO_PATH} ({size_mb:.1f} MB)")
 
+    # Archive before uploading. If the upload fails, tomorrow's render would
+    # otherwise overwrite this file and the video would be gone.
+    archived = archive_video(pgn_path)
+    if archived:
+        log(f"archived -> {archived.relative_to(ROOT)}")
+
+    entry: Dict = {
+        "date": date.today().isoformat(),
+        "pgn": pgn_path.name,
+        "archive": archived.name if archived else None,
+        "sizeMb": round(size_mb, 1),
+        "status": "rendered",
+    }
+
     # 3) Upload (optional)
     if args.no_upload:
         log("upload skipped (--no-upload)")
+        entry["status"] = "not_uploaded"
+        record_publication(entry)
     elif not have_upload_creds():
         log("upload skipped: GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN not set in .env")
         log(f"the finished video is at: {VIDEO_PATH}")
+        entry["status"] = "no_credentials"
+        record_publication(entry)
     else:
         try:
-            upload_video(args.privacy, dry_run=args.dry_run_upload)
+            result = upload_video(args.privacy, dry_run=args.dry_run_upload) or {}
+            entry.update(
+                status="uploaded",
+                videoId=result.get("videoId"),
+                url=result.get("url"),
+                title=result.get("title"),
+                privacy=args.privacy,
+            )
+            record_publication(entry)
+            if result.get("url"):
+                log(f"published: {result['url']}")
             notify(f"Chess autopost: uploaded daily video ({pgn_path.name}).")
         except subprocess.CalledProcessError as e:
             log(f"ERROR: upload failed with exit code {e.returncode}")
+            # Record the failure so the archived video can be retried later.
+            entry.update(status="upload_failed", exitCode=e.returncode)
+            record_publication(entry)
             notify(f"Chess autopost: render OK but upload FAILED ({pgn_path.name}).")
             return e.returncode
 

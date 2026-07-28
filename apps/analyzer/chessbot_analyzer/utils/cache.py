@@ -13,17 +13,25 @@ logger = get_logger(__name__)
 class CacheManager:
     """Manages caching of engine analysis results."""
     
-    def __init__(self, cache_dir: str = "./cache", db_path: Optional[str] = None):
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(exist_ok=True)
-        
-        # Use in-memory SQLite for simple caching
-        self.db_path = db_path or ":memory:"
+    def __init__(self, cache_dir: Optional[str] = None, db_path: Optional[str] = None):
+        # Engine analysis is the most expensive step in the pipeline, so the
+        # cache must survive between runs. An in-memory database made every
+        # re-render pay full Stockfish cost again.
+        settings_dir = os.getenv("CACHE_DIR") or "./cache"
+        self.cache_dir = Path(cache_dir or settings_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        if db_path is None:
+            enabled = (os.getenv("ENABLE_DISK_CACHE", "true") or "").strip().lower()
+            use_disk = enabled not in ("0", "false", "no")
+            db_path = str(self.cache_dir / "engine_cache.sqlite") if use_disk else ":memory:"
+
+        self.db_path = db_path
         self._init_db()
     
     def _init_db(self):
         """Initialize SQLite database for caching."""
-        self.conn = sqlite3.connect(self.db_path)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS cache (
                 key TEXT PRIMARY KEY,
@@ -31,6 +39,11 @@ class CacheManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Durable enough for a cache, and much faster for the write-heavy
+        # analysis pass.
+        if self.db_path != ":memory:":
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.commit()
     
     def get(self, key: str) -> Optional[Any]:

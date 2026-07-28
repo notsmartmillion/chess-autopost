@@ -3,6 +3,8 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      DB_URL: sqlite:///./chessbot.db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -12,16 +14,20 @@ jobs:
         run: |
           python -m pip install -U pip
           pip install -e ./apps/analyzer[dev]
-      - name: Python tests (optional)
-        run: pytest -q || true
+      - name: Python tests
+        run: pytest apps/analyzer/tests -q
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - name: Install renderer deps
         working-directory: apps/renderer
         run: npm ci || npm install
-      - name: Type-check TS
+      - name: Type-check renderer
         working-directory: apps/renderer
         run: npx tsc --noEmit
-
-
+      - name: Install uploader deps
+        working-directory: apps/uploader
+        run: npm install
+      - name: Type-check uploader
+        working-directory: apps/uploader
+        run: npx tsc --noEmit

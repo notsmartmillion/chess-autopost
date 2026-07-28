@@ -14,7 +14,11 @@ class Settings(BaseSettings):
     # -----------------------------
     # Database
     # -----------------------------
-    DB_URL: str  # required (e.g., sqlite:///./chessbot.db or postgres URL)
+    # Only the legacy `chessbot ingest/select` CLI path uses a database. The
+    # video pipeline (facts -> director -> voice -> render) is file-based, so
+    # this must not be required — otherwise a missing DB_URL crashes every
+    # module that imports settings.
+    DB_URL: str = "sqlite:///./chessbot.db"
 
     # -----------------------------
     # Engine (Stockfish)
@@ -76,7 +80,6 @@ class Settings(BaseSettings):
 
     @validator("DB_URL")
     def _strip_db_url(cls, v: str) -> str:
-        # Trim whitespace; don't provide a default (keeps it required)
         return v.strip()
 
     @validator("DB_URL", pre=True)
@@ -87,7 +90,7 @@ class Settings(BaseSettings):
         env_v = os.getenv("DATABASE_URL")
         if env_v:
             return env_v
-        return v
+        return v or "sqlite:///./chessbot.db"
 
     @validator("STOCKFISH_PATH", pre=True)
     def _normalize_stockfish_path(cls, v: str) -> str:

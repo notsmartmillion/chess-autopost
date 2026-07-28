@@ -4,13 +4,14 @@
  * YouTube uploader CLI for chess autopost
  */
 
+import 'dotenv/config';
 import { Command } from 'commander';
 import fs from 'fs/promises';
-import path from 'path';
-import { uploadVideo, UploadOptions, getVideoInfo, updateVideoMetadata } from './youtube_client';
+import { uploadVideo, getVideoInfo, updateVideoMetadata, listVideos } from './youtube_client';
+import type { UploadOptions } from './youtube_client';
 import { generateMetadata } from './metadata';
 import { generateChaptersText } from './chapters';
-import { Timeline } from '../renderer/src/types/timeline';
+import type { Script } from '../renderer/src/types/script';
 
 const program = new Command();
 
@@ -23,22 +24,38 @@ program
   .command('upload')
   .description('Upload video to YouTube')
   .requiredOption('-v, --video <file>', 'Video file path')
-  .requiredOption('-t, --timeline <file>', 'Timeline JSON file')
-  .option('-t, --thumb <file>', 'Thumbnail file path')
+  .requiredOption('-t, --script <file>', 'Script JSON file (outputs/script.json)')
+  .option('-T, --thumb <file>', 'Thumbnail file path')
   .option('-p, --privacy <status>', 'Privacy status', 'unlisted')
   .option('--publish-at <date>', 'Schedule publish date (ISO format)')
   .option('--dry-run', 'Show what would be uploaded without actually uploading')
   .action(async (options) => {
     try {
-      console.log('Loading timeline...');
-      const timelineData = await fs.readFile(options.timeline, 'utf-8');
-      const timeline: Timeline = JSON.parse(timelineData);
+      console.log('Loading script...');
+      const timelineData = await fs.readFile(options.script, 'utf-8');
+      const script: Script = JSON.parse(timelineData);
       
+      // Pull the channel's recent uploads for the "More videos" block. Best
+      // effort: a new channel has none, and a failure here must not block a
+      // finished video from being published.
+      let moreVideos: string[] = [];
+      if (!options.dryRun) {
+        try {
+          const recent = await listVideos(3);
+          moreVideos = recent
+            .filter((v: any) => v?.id?.videoId && v?.snippet?.title)
+            .map((v: any) => `${v.snippet.title}
+https://youtu.be/${v.id.videoId}`);
+        } catch {
+          console.log('(could not fetch recent videos — skipping that section)');
+        }
+      }
+
       console.log('Generating metadata...');
-      const metadata = generateMetadata(timeline);
+      const metadata = generateMetadata(script, moreVideos);
       
       console.log('Generating chapters...');
-      const chaptersText = generateChaptersText(timeline);
+      const chaptersText = generateChaptersText(script);
       
       // Combine description with chapters
       const fullDescription = metadata.description + '\n\n' + chaptersText;
@@ -144,16 +161,16 @@ program
 program
   .command('chapters')
   .description('Generate chapters for timeline')
-  .requiredOption('-t, --timeline <file>', 'Timeline JSON file')
+  .requiredOption('-t, --script <file>', 'Script JSON file (outputs/script.json)')
   .option('-o, --output <file>', 'Output file for chapters')
   .action(async (options) => {
     try {
-      console.log('Loading timeline...');
-      const timelineData = await fs.readFile(options.timeline, 'utf-8');
-      const timeline: Timeline = JSON.parse(timelineData);
+      console.log('Loading script...');
+      const timelineData = await fs.readFile(options.script, 'utf-8');
+      const script: Script = JSON.parse(timelineData);
       
       console.log('Generating chapters...');
-      const chaptersText = generateChaptersText(timeline);
+      const chaptersText = generateChaptersText(script);
       
       if (options.output) {
         await fs.writeFile(options.output, chaptersText, 'utf-8');
@@ -171,17 +188,34 @@ program
 
 program
   .command('metadata')
-  .description('Generate metadata for timeline')
-  .requiredOption('-t, --timeline <file>', 'Timeline JSON file')
+  .description('Generate metadata for a script')
+  .requiredOption('-t, --script <file>', 'Script JSON file (outputs/script.json)')
   .option('-o, --output <file>', 'Output file for metadata')
+  .option('--fetch-recent', 'Include recent channel uploads (needs OAuth creds)')
   .action(async (options) => {
     try {
-      console.log('Loading timeline...');
-      const timelineData = await fs.readFile(options.timeline, 'utf-8');
-      const timeline: Timeline = JSON.parse(timelineData);
+      console.log('Loading script...');
+      const timelineData = await fs.readFile(options.script, 'utf-8');
+      const script: Script = JSON.parse(timelineData);
       
+      // Pull the channel's recent uploads for the "More videos" block. Best
+      // effort: a new channel has none, and a failure here must not block a
+      // finished video from being published.
+      let moreVideos: string[] = [];
+      if (options.fetchRecent) {
+        try {
+          const recent = await listVideos(3);
+          moreVideos = recent
+            .filter((v: any) => v?.id?.videoId && v?.snippet?.title)
+            .map((v: any) => `${v.snippet.title}
+https://youtu.be/${v.id.videoId}`);
+        } catch {
+          console.log('(could not fetch recent videos — skipping that section)');
+        }
+      }
+
       console.log('Generating metadata...');
-      const metadata = generateMetadata(timeline);
+      const metadata = generateMetadata(script, moreVideos);
       
       if (options.output) {
         await fs.writeFile(options.output, JSON.stringify(metadata, null, 2), 'utf-8');

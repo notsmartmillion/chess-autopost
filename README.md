@@ -1,19 +1,40 @@
 # Chess Autopost
 
-A fully autonomous pipeline for creating professional chess analysis videos with perfect audio-visual synchronization. The system ingests historic games, analyzes them with Stockfish, generates voice-over scripts, synthesizes speech, and renders videos with precise timing between narration and chess moves.
+A fully autonomous pipeline for creating professional chess analysis videos with audio-visual synchronization. The system fetches a fresh game daily, analyzes it with Stockfish, generates banter-style voice-over, synthesizes speech, renders a video, and uploads it to YouTube.
+
+## 🚀 Daily one-shot (the important command)
+
+```bash
+# From repo root, after one-time setup below:
+python services/orchestrator/flow.py            # fetch → analyze → narrate → TTS → render → upload
+python services/orchestrator/flow.py --no-upload   # same, keep video local
+python services/orchestrator/flow.py --pgn my.pgn  # render a specific game
+```
+
+`flow.py` needs **no credentials** to produce a video (public Lichess API + local
+pyttsx3 TTS). The YouTube upload step runs only when `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`, and `GOOGLE_REFRESH_TOKEN` are set in `.env`; otherwise
+it's skipped and the finished video stays at `apps/renderer/out/video.mp4`.
+A state file (`outputs/state/used_games.json`) guarantees the same game is never
+posted twice.
+
+Schedule it:
+
+- **Windows**: `schtasks /Create /TN "ChessAutopost" /TR "powershell -NoProfile -ExecutionPolicy Bypass -File <repo>\services\orchestrator\run_daily.ps1" /SC DAILY /ST 07:00`
+- **Linux/macOS**: cron `0 7 * * * <repo>/services/orchestrator/run_daily.sh`
 
 ## 🎯 Overview
 
 Chess Autopost automatically creates daily chess analysis videos by:
 
-1. **Ingesting** historic games from Lichess, Chess.com, and TWIC
-2. **Selecting** the best game for the day (scoring/anniversary-based)
+1. **Fetching** a recent game from a pool of strong Lichess players (configurable via `DAILY_LICHESS_PLAYERS`)
+2. **Selecting** the most watchable unused game (decisive, mid-length, high-rated)
 3. **Analyzing** each move with Stockfish MultiPV analysis
-4. **Detecting** tactical features (pins, attacks, sacrifices)
-5. **Generating** concise voice-over scripts
-6. **Synthesizing** natural speech with ElevenLabs
-7. **Rendering** videos with Remotion (React/TypeScript)
-8. **Uploading** to YouTube with metadata and chapters
+4. **Detecting** tactical features (pins, attacks, blunders/brilliancies)
+5. **Generating** banter-style voice-over scripts (built-in narrator; optional LLM via `OPENAI_API_KEY`)
+6. **Synthesizing** speech locally with pyttsx3 (ElevenLabs client available as an alternative)
+7. **Rendering** videos with Remotion (board, move arrows, eval bar, move captions, "better was…" alternative-line previews)
+8. **Uploading** to YouTube with metadata and chapters (optional)
 
 ## 🏗️ Architecture
 
@@ -34,352 +55,197 @@ chess-autopost/
 └── outputs/               # Generated videos, thumbnails, logs
 ```
 
+## 🧠 How it works (four passes)
+
+The script is the timeline — not the game. This is the central design decision
+and it is what makes narrated variations possible.
+
+```
+PGN ──► facts.py ──► director.py ──► tts.py ──► Remotion ──► YouTube
+        (engine)     (beats)         (voice)     (render)
+```
+
+**1. Facts** (`apps/analyzer/chessbot_analyzer/facts.py`)
+Stockfish walks the game **once** (one analysis per position) and emits a fact
+sheet per ply: White-POV evaluation, best line, move quality, and positional
+features — pins, skewers, forks, hanging pieces, batteries, long diagonals
+("the bishop on g7 shoots across the board"), pawn structure, king safety,
+material, phase. Plus ranked `keyMoments` for the whole game.
+
+**2. Director** (`apps/analyzer/chessbot_analyzer/director.py`)
+Facts become a **beat script**. A beat is one spoken sentence *plus the board
+directives that belong with it* — which squares to highlight, which arrow to
+draw, which move to play. Crucially every beat carries an explicit `fen`.
+
+That is what fixes variation stitching. A "better was Qb6…" digression is just
+a run of beats with `branch: true`, and returning to the game is a beat whose
+`fen` is the real position again. Nothing is rewound, because nothing is a
+cursor. Variations trigger on blunders, mistakes, missed mates, costly
+inaccuracies at key moments, and on brilliancies (where the branch instead
+*refutes* the natural alternative — "it is worth seeing why the obvious move
+fails").
+
+**3. Voice** (`services/orchestrator/tts.py`)
+ElevenLabs `/with-timestamps` returns the audio **and** per-character
+alignment, so we get the exact clip duration and the moment every word is
+spoken — no ffmpeg required. The director tags each beat with `moveCueWords`,
+so a piece begins sliding precisely as its destination square is named.
+Falls back to local pyttsx3 (with estimated word times) when no API key is set,
+so the pipeline never hard-fails. Clips are cached by content hash, so re-runs
+do not burn credits.
+
+**4. Render** (`apps/renderer`)
+Remotion renders the beats. `AnimatedBoard` slides pieces with a spring —
+correctly handling castling, en passant and promotion by diffing the two FENs —
+so motion is smooth rather than snapping between positions. Composition length
+comes from `calculateMetadata` reading the measured audio, so the video is
+exactly as long as the narration.
+
 ## 🎬 Key Features
 
-### **Perfect Audio-Visual Sync**
-- **Word-Level Alignment**: Pin glow appears exactly when "pinned" is spoken
-- **Audio-Driven Timing**: Scene duration matches audio clip length
-- **Cue-Based Animations**: Animations trigger on specific spoken words
-- **Fallback Safety**: Percentage-based timing if alignment fails
-
-### **Professional Chess Analysis**
-- **MultiPV Engine Analysis**: Stockfish with 4+ principal variations
-- **Tactical Detection**: Automatic pin, fork, and sacrifice detection
-- **Evaluation Tracking**: Smooth evaluation bar with centipawn precision
-- **Alternative Moves**: Preview of best alternatives with reset scenes
-
-### **Automated Content Creation**
-- **Smart Game Selection**: Anniversary and quality-based selection
-- **Natural Scripts**: Chess notation normalized for speech
-- **Dynamic Metadata**: Auto-generated titles, descriptions, and tags
-- **YouTube Integration**: Automated upload with chapters and thumbnails
+- **Smooth piece motion** — spring-animated slides, fading captures, no hard cuts
+- **Cue-accurate highlights** — visuals land on the spoken word, not a guess
+- **Inline variations** — branch into the engine's line and resume cleanly
+- **Grounded narration** — commentary is generated from real engine facts, and
+  optionally polished by an LLM (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) so it
+  does not sound templated
+- **Classic game library** — daily games are drawn from world-champion
+  collections (Tal, Fischer, Kasparov, Capablanca, …), cached locally after
+  first download
+- **Never repeats a game** — `outputs/state/used_games.json` tracks move hashes
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Python 3.10+ with virtual environment
-- Node.js 18+ (or 20) and npm
-- PostgreSQL database
-- Stockfish engine binary
-- ElevenLabs API key
-- YouTube Data API credentials
+- **Python 3.11** (pydantic is pinned <2; 3.12+ works, 3.14 does not)
+- **Node.js 18+** and npm
+- **Stockfish** — the setup step below downloads it automatically
+- Optional: ElevenLabs API key (voice), Anthropic/OpenAI key (narration polish),
+  YouTube OAuth credentials (upload)
 
-### Installation
+No database is required.
 
-1. **Create a root virtual environment and install the analyzer (editable):**
+### One-time setup
+
 ```bash
-# from repo root
-python -m venv .venv
-source .venv/bin/activate    # Windows: .\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-pip install -e ./apps/analyzer[dev]
-```
+# 1. Python environment
+py -3.11 -m venv .venv                 # Windows
+# python3.11 -m venv .venv             # Linux/macOS
+.venv/Scripts/python -m pip install -U pip
+.venv/Scripts/python -m pip install -e "./apps/analyzer[dev]" pyttsx3 pydub requests python-dateutil
 
-2. **Setup TypeScript renderer:**
-```bash
-cd chess-autopost/apps/renderer
-npm install
-# Type-check
-npx tsc --noEmit
-# Optional: render video/thumbnail via scripts
-npm run render:video
-npm run render:thumb
-```
+# 2. Renderer
+npm --prefix apps/renderer install
 
-3. **Configure environment:**
-```bash
+# 3. Stockfish (Windows example; use your package manager on Linux/macOS)
+mkdir -p tools/stockfish && cd tools/stockfish
+curl -L -o sf.zip https://github.com/official-stockfish/Stockfish/releases/download/sf_18/stockfish-windows-x86-64-avx2.zip
+unzip -o sf.zip && mv stockfish/*.exe ./stockfish.exe && rm -rf stockfish sf.zip && cd ../..
+
+# 4. Configuration
 cp .env.example .env
-# Edit .env with your API keys and database URL
+# Set STOCKFISH_PATH, and any API keys you want to use.
 ```
 
-4. **Initialize database:**
-```bash
-psql -d your_database -f infra/migrations/001_init.sql
-```
-
-### Basic Usage
-
-1. **Ingest games:**
-```bash
-chessbot ingest --source lichess --path games.pgn
-```
-
-2. **Select today's game:**
-```bash
-chessbot select --strategy anniversary-or-topscore
-```
-
-3. **Run complete pipeline:**
-```bash
-chessbot pipeline --game-id 123 --output-dir ./outputs
-```
-
-4. **Generate voice:**
-```bash
-voice synth --lines outputs/lines.json --voice-id VOICE_ID --out audio/
-```
-
-5. **Align audio for perfect sync:**
-```bash
-voice align --lines outputs/lines.json --audio-dir audio/ --output alignment.json
-```
-
-6. **Render video:**
-```bash
-renderer render --timeline outputs/timeline.json --audio-dir audio/
-```
-
-### Quick commands
+Then produce a video:
 
 ```bash
-# Ingest → Select → Analyze + Script
-chessbot ingest --source lichess --path games.pgn
-chessbot select --strategy anniversary-or-topscore
-chessbot pipeline --game-id 123 --output-dir ./outputs
-
-# Voice (generate + align)
-voice synth --lines ./outputs/lines.json --voice-id $VOICE_ID --out ./outputs/audio/
-voice align --lines ./outputs/lines.json --audio-dir ./outputs/audio/ --output ./outputs/alignment.json
-
-# Render (via Remotion scripts, optional)
-cd apps/renderer
-npm run render:video
+.venv/Scripts/python services/orchestrator/flow.py --no-upload
 ```
 
-7. **Upload to YouTube:**
-```bash
-uploader upload --video outputs/video.mp4 --timeline outputs/timeline.json
-```
-
-## 📚 Detailed Documentation
-
-### **Python Analyzer (`apps/analyzer/`)**
-
-The analyzer is the core engine that processes chess games and generates render-ready timelines.
-
-#### **Core Modules:**
-
-- **`config.py`**: Central configuration with Pydantic settings
-- **`engine.py`**: Stockfish wrapper with MultiPV analysis and caching
-- **`detectors.py`**: Feature detection for pins, attacks, and move evaluation
-- **`timeline.py`**: Converts analysis into renderer-ready timeline structure
-- **`scripting.py`**: Generates voice-over scripts optimized for audio sync
-- **`cli.py`**: Command-line interface for all operations
-
-#### **Key Classes:**
-
-```python
-# Engine analysis with caching
-with StockfishEngine() as engine:
-    results = engine.analyse(board)  # Returns MultiPV analysis
-
-# Feature detection
-pins = FeatureDetectors.compute_pins(board)
-attacked = FeatureDetectors.attacked_squares(board)
-tag = FeatureDetectors.tag_move(eval_before, eval_after)
-
-# Timeline building
-builder = TimelineBuilder()
-timeline = builder.from_game(game_id, audio_durations)
-```
-
-#### **CLI Commands:**
+### Useful invocations
 
 ```bash
-# Ingest games from various sources
-chessbot ingest --source lichess --path games.pgn
-chessbot ingest --source chesscom --username magnus --month 2023-01
-chessbot ingest --source twic --path twic1234.pgn
+# Render one specific game
+python services/orchestrator/build_video.py --pgn outputs/pgns/daily/game.pgn
 
-# Select and analyze games
-chessbot select --strategy anniversary-or-topscore
-chessbot analyse --game-id 123 --out timeline.json
-chessbot script --timeline timeline.json --out lines.json
+# Fast structural check: no engine depth, silent placeholder audio, no render
+python services/orchestrator/build_video.py --pgn game.pgn --tts silent --depth 8 --no-llm --no-render
 
-# Run complete pipeline
-chessbot pipeline --game-id 123 --output-dir ./outputs
+# Preview in the browser instead of rendering
+npm --prefix apps/renderer run preview
+
+# Pick a classic game by hand
+python services/orchestrator/ingest/classics_fetch.py --list
+python services/orchestrator/ingest/classics_fetch.py --player Fischer --out outputs/pgns/daily/game.pgn
+
+# Inspect what the uploader would post
+npm --prefix apps/uploader run cli -- upload -v apps/renderer/out/video.mp4 -t outputs/script.json --dry-run
 ```
 
-### **TypeScript Renderer (`apps/renderer/`)**
+### Build artifacts
 
-The renderer creates professional chess videos using Remotion with perfect audio synchronization.
+| File | Contents |
+|---|---|
+| `outputs/facts.json` | Per-ply engine + positional facts (pass 1) |
+| `outputs/script.json` | Narration beats with board directives (pass 2) |
+| `outputs/audio/` | One narration clip per beat (pass 3) |
+| `apps/renderer/out/video.mp4` | Final video (pass 4) |
 
-#### **Core Components:**
+## 📚 Module reference
 
-- **`Board.tsx`**: SVG chess board with piece placement
-- **`Arrow.tsx`**: Animated move arrows with customizable styles
-- **`Heatmap.tsx`**: Attack/defense square highlighting
-- **`PinHighlight.tsx`**: Pin detection with ray visualization
-- **`EvalBar.tsx`**: Animated evaluation bar
-- **`PortraitPanel.tsx`**: Player portraits and names
+| Module | Role |
+|---|---|
+| `apps/analyzer/chessbot_analyzer/facts.py` | **Pass 1.** `extract_facts(pgn)` → per-ply engine + positional fact sheet |
+| `apps/analyzer/chessbot_analyzer/director.py` | **Pass 2.** `build_script(facts)` → narration beats + board directives |
+| `services/orchestrator/tts.py` | **Pass 3.** `synthesize(lines, dir)` → audio + word timings |
+| `apps/renderer/src/compositions/ChessNarration.tsx` | **Pass 4.** Beat-driven Remotion composition |
+| `apps/renderer/src/components/AnimatedBoard.tsx` | Spring-animated board (castling / en passant / promotion aware) |
+| `services/orchestrator/build_video.py` | Chains all four passes for one game |
+| `services/orchestrator/flow.py` | Daily runner: pick game → build → upload |
+| `services/orchestrator/ingest/classics_fetch.py` | Classic master-game library |
+| `apps/uploader/` | YouTube upload, metadata, chapters |
 
-#### **Scene Types:**
+### The beat schema
 
-- **`SceneMainMove.tsx`**: Main move with all tactical elements
-- **`SceneAltPreview.tsx`**: Alternative move previews
-- **`SceneReset.tsx`**: Quick transition between scenes
+Everything downstream of the director is driven by this one structure:
 
-#### **Audio Sync System:**
-
-```typescript
-// Cue-based animation timing
-const pinTiming = getAnimationTiming(
-  scene.durationMs,
-  scene.cueTimes,
-  'pinned',    // Keyword to sync with
-  0.35,        // Fallback percentage
-  fps
-);
-
-// Pin glow appears exactly when "pinned" is spoken
-const pinOpacity = interpolate(
-  frame,
-  [pinTiming.startFrame, pinTiming.startFrame + 10],
-  [0, 1],
-  { easing: Easing.out(Easing.cubic) }
-);
+```jsonc
+{
+  "id": "b0042",
+  "kind": "move",              // intro | move | variation | resume | hold | outro
+  "text": "Tal answers with knight takes g4, giving up material for the initiative.",
+  "prevFen": "...",            // position before  → drives the slide animation
+  "fen": "...",                // position after
+  "move": {"from": "f6", "to": "g4", "san": "Nxg4"},
+  "branch": false,             // true inside a variation
+  "label": "Better was Rd7",   // banner shown while branching
+  "highlights": [{"square": "g4", "kind": "danger"}],
+  "arrows": [{"from": "g7", "to": "a1", "color": "#f5c542"}],
+  "checkSquare": null,
+  "evalCp": -120,              // White POV, drives the eval bar
+  "tag": "inaccuracy",
+  "ply": 41,
+  "moveCueWords": ["g4"],      // animate the move when this word is spoken
+  "durationMs": 4820,          // measured from the narration clip
+  "moveAtMs": 1180,            // resolved from word-level timestamps
+  "audioFile": "b0042.mp3"
+}
 ```
 
-### **Voice Synthesis (`apps/voice/`)**
-
-Advanced text-to-speech with forced alignment for word-level synchronization.
-
-#### **Key Features:**
-
-- **Batch Synthesis**: Process multiple voice lines efficiently
-- **Caching**: Avoid re-synthesizing identical text
-- **Text Normalization**: Convert chess notation to natural speech
-- **Forced Alignment**: Get precise word timestamps with WhisperX
-
-#### **Usage:**
-
-```bash
-# Synthesize voice lines
-voice synth --lines lines.json --voice-id VOICE_ID --out audio/
-
-# List available voices
-voice voices
-
-# Normalize text for better pronunciation
-voice normalize --input script.txt --output script.normalized.txt
-
-# Test voice synthesis
-voice test --voice-id VOICE_ID --text "Hello, this is a test"
-```
-
-#### **Text Normalization:**
-
-```typescript
-// Converts chess notation to natural speech
-"Kxe4" → "King takes e4"
-"O-O" → "castles kingside"
-"#3" → "mate in 3"
-"g2" → "gee two"
-```
-
-### **YouTube Uploader (`apps/uploader/`)**
-
-Automated YouTube upload with intelligent metadata generation.
-
-#### **Features:**
-
-- **Auto Metadata**: Generate titles, descriptions, and tags
-- **Chapter Generation**: Automatic chapters from game phases
-- **Thumbnail Upload**: Custom thumbnail support
-- **Scheduling**: Schedule videos for optimal posting times
-
-#### **Usage:**
-
-```bash
-# Upload video with auto-generated metadata
-uploader upload --video video.mp4 --timeline timeline.json
-
-# Generate metadata only
-uploader metadata --timeline timeline.json --output metadata.json
-
-# Generate chapters
-uploader chapters --timeline timeline.json --output chapters.txt
-
-# Update video metadata
-uploader update --video-id VIDEO_ID --title "New Title"
-```
+`highlights[].kind` maps to the palette: `move` amber, `alt` orange,
+`danger` red, `good` green.
 
 ## 🔧 Configuration
 
-### **Environment Variables**
+All configuration lives in `.env` (see `.env.example` for the annotated list).
+The ones that matter most:
 
-```bash
-# Database
-DB_URL=postgresql+psycopg2://user:pass@host:5432/chessbot
+| Variable | Effect |
+|---|---|
+| `STOCKFISH_PATH` | Path to the engine binary (**required**) |
+| `ENGINE_DEPTH` / `ENGINE_MULTIPV` | Analysis quality vs. speed. 16 / 3 is a good default |
+| `ELEVENLABS_API_KEY` + `VOICE_ID` | Enables ElevenLabs voice with word-level timestamps |
+| `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` | Enables LLM narration polish |
+| `TTS_BACKEND` | `auto` (default), `elevenlabs`, `local`, `silent` |
+| `DAILY_SOURCE` | `classics` (default) or `lichess` |
+| `DAILY_LEGENDS` | Restrict the classics pool, e.g. `Tal,Fischer` |
+| `GOOGLE_CLIENT_ID/SECRET/REFRESH_TOKEN` | Enables the upload step |
+| `YOUTUBE_PRIVACY` | `public`, `unlisted` (default), `private` |
 
-# ElevenLabs TTS
-ELEVENLABS_API_KEY=your_api_key
-
-# YouTube API
-GOOGLE_CLIENT_ID=your_client_id
-GOOGLE_CLIENT_SECRET=your_client_secret
-GOOGLE_REFRESH_TOKEN=your_refresh_token
-
-# Engine Settings
-STOCKFISH_PATH=/usr/local/bin/stockfish
-ENGINE_THREADS=4
-ENGINE_HASH_MB=1024
-ENGINE_DEPTH=20
-ENGINE_MULTIPV=4
-
-# Optional Services
-AWS_ACCESS_KEY_ID=your_aws_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret
-SLACK_WEBHOOK_URL=your_slack_webhook
-```
-
-### **Engine Configuration**
-
-```python
-# config.py
-class Settings(BaseSettings):
-    ENGINE_THREADS: int = 4          # CPU threads for Stockfish
-    ENGINE_HASH_MB: int = 1024       # Memory allocation
-    ENGINE_DEPTH: int = 20           # Analysis depth
-    ENGINE_MULTIPV: int = 4          # Number of principal variations
-    ALT_PREVIEW_PLIES: int = 2       # Moves to preview in alternatives
-    MAX_SCENE_DURATION_MS: int = 1600 # Maximum scene length
-```
-
-## 🎬 Audio-Visual Synchronization
-
-The system ensures perfect sync between narration and chess moves through a multi-stage process:
-
-### **1. Scene-Based Architecture**
-- Each move gets a unique scene ID (`m1`, `m2`, etc.)
-- One voice line per scene with matching ID
-- Audio files named by scene ID (`m1.wav`, `m2.wav`)
-
-### **2. Audio-Driven Timing**
-```python
-# Scene duration based on audio length
-duration_ms = max(1200, min(2500, audio_duration_ms + 150))
-```
-
-### **3. Word-Level Alignment**
-```python
-# Forced alignment with WhisperX
-aligner = AudioAligner()
-words = aligner.align_audio("m1.wav", "The knight is pinned on e3")
-# Returns: [{"word": "pinned", "start": 1.17, "end": 1.23}]
-```
-
-### **4. Cue-Based Animations**
-```typescript
-// Pin glow appears exactly when "pinned" is spoken
-const pinTiming = getAnimationTiming(scene.durationMs, scene.cueTimes, 'pinned', 0.35, fps);
-```
-
-### **5. Fallback Safety**
-- Percentage-based timing if alignment fails
-- Natural speech rhythm optimization
-- Graceful degradation for edge cases
+Engine analysis is cached on disk (`cache/engine_cache.sqlite`), so re-rendering
+the same game does not pay Stockfish cost twice.
 
 ## 🚀 Deployment
 

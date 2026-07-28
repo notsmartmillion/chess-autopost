@@ -1,197 +1,108 @@
 /**
- * Generate YouTube chapters from timeline scenes.
+ * Generate YouTube chapters from the narration beat script.
+ *
+ * Chapters are derived from the same beats that drive the video, so the
+ * timestamps are exact rather than estimated: each beat carries the measured
+ * duration of its narration clip.
  */
 
-import { Timeline, Scene } from '../renderer/src/types/timeline';
+import type { Beat, Script } from '../renderer/src/types/script';
 
 export interface Chapter {
-  time: string; // Format: "0:00" or "1:23"
+  time: string; // "0:00" / "12:34"
   title: string;
 }
 
-/**
- * Generate chapters from timeline scenes
- */
-export function generateChapters(timeline: Timeline): Chapter[] {
-  const chapters: Chapter[] = [];
-  let currentTimeMs = 0;
-  
-  // Add opening chapter
-  chapters.push({
-    time: formatTime(0),
-    title: 'Opening',
-  });
-  
-  let moveCount = 0;
-  let inMiddlegame = false;
-  let inEndgame = false;
-  
-  timeline.scenes.forEach((scene, index) => {
-    if (scene.type === 'main') {
-      moveCount++;
-      
-      // Determine game phase
-      if (moveCount >= 10 && moveCount <= 30 && !inMiddlegame) {
-        inMiddlegame = true;
-        chapters.push({
-          time: formatTime(currentTimeMs),
-          title: 'Middlegame',
-        });
-      } else if (moveCount > 30 && !inEndgame) {
-        inEndgame = true;
-        chapters.push({
-          time: formatTime(currentTimeMs),
-          title: 'Endgame',
-        });
+/** YouTube requires the first chapter at 0:00 and at least three chapters. */
+export function generateChapters(script: Script): Chapter[] {
+  const chapters: Chapter[] = [{ time: formatTime(0), title: 'Introduction' }];
+
+  let cursorMs = 0;
+  let lastChapterMs = 0;
+  let phase: 'opening' | 'middlegame' | 'endgame' = 'opening';
+
+  // Never place two chapters closer than this — YouTube renders them unusably.
+  const MIN_GAP_MS = 25_000;
+
+  for (const beat of script.beats) {
+    const startMs = cursorMs;
+    cursorMs += beat.durationMs || 0;
+
+    if (beat.kind === 'intro' || beat.kind === 'outro') continue;
+
+    const moveNumber = beat.ply ? Math.ceil(beat.ply / 2) : 0;
+
+    // Phase transitions.
+    if (phase === 'opening' && moveNumber >= 12) {
+      phase = 'middlegame';
+      if (startMs - lastChapterMs >= MIN_GAP_MS) {
+        chapters.push({ time: formatTime(startMs), title: 'Middlegame' });
+        lastChapterMs = startMs;
       }
-      
-      // Add move-specific chapters for interesting moves
-      if (isInterestingMove(scene)) {
-        const moveNumber = Math.ceil(moveCount / 2);
-        const player = moveCount % 2 === 1 ? 'White' : 'Black';
-        const moveTitle = generateMoveTitle(scene, moveNumber, player);
-        
-        chapters.push({
-          time: formatTime(currentTimeMs),
-          title: moveTitle,
-        });
-      }
+      continue;
     }
-    
-    currentTimeMs += scene.durationMs;
-  });
-  
-  // Add conclusion chapter
-  chapters.push({
-    time: formatTime(currentTimeMs),
-    title: 'Conclusion',
-  });
-  
+    if (phase === 'middlegame' && moveNumber >= 32) {
+      phase = 'endgame';
+      if (startMs - lastChapterMs >= MIN_GAP_MS) {
+        chapters.push({ time: formatTime(startMs), title: 'Endgame' });
+        lastChapterMs = startMs;
+      }
+      continue;
+    }
+
+    // Notable moments get their own chapter.
+    const title = notableTitle(beat, moveNumber);
+    if (title && startMs - lastChapterMs >= MIN_GAP_MS) {
+      chapters.push({ time: formatTime(startMs), title });
+      lastChapterMs = startMs;
+    }
+  }
+
+  if (cursorMs > 0) {
+    chapters.push({ time: formatTime(Math.max(0, cursorMs - 8000)), title: 'Final thoughts' });
+  }
   return chapters;
 }
 
-/**
- * Check if a move is interesting enough for a chapter
- */
-function isInterestingMove(scene: Scene): boolean {
-  if (scene.type !== 'main') return false;
-  
-  // Check for pins
-  if (scene.pins && scene.pins.length > 0) {
-    return true;
+function notableTitle(beat: Beat, moveNumber: number): string | null {
+  const move = beat.move?.san;
+  const prefix = moveNumber ? `Move ${moveNumber}` : 'Key moment';
+
+  if (beat.kind === 'variation') {
+    return beat.label ? `${prefix}: ${beat.label}` : null;
   }
-  
-  // Check for significant evaluation changes
-  if (Math.abs(scene.evalBarTarget) > 0.3) {
-    return true;
+  switch (beat.tag) {
+    case 'blunder':
+      return `${prefix}: the losing mistake${move ? ` (${move})` : ''}`;
+    case 'mistake':
+      return `${prefix}: a costly error${move ? ` (${move})` : ''}`;
+    case 'brilliant':
+      return `${prefix}: brilliancy${move ? ` (${move})` : ''}`;
+    case 'great':
+      return `${prefix}: the key idea${move ? ` (${move})` : ''}`;
+    default:
+      return null;
   }
-  
-  // Check for many attacked squares (tactical position)
-  const totalAttacked = scene.attacked.white.length + scene.attacked.black.length;
-  if (totalAttacked > 8) {
-    return true;
-  }
-  
-  return false;
 }
 
-/**
- * Generate title for interesting move
- */
-function generateMoveTitle(scene: Scene, moveNumber: number, player: string): string {
-  const titles: string[] = [];
-  
-  // Add move number and player
-  titles.push(`Move ${moveNumber} (${player})`);
-  
-  // Add tactical elements
-  if (scene.pins && scene.pins.length > 0) {
-    titles.push('Pin Tactics');
-  }
-  
-  // Add evaluation context
-  if (Math.abs(scene.evalBarTarget) > 0.5) {
-    const advantage = scene.evalBarTarget > 0 ? 'White Advantage' : 'Black Advantage';
-    titles.push(advantage);
-  }
-  
-  // Add tactical complexity
-  const totalAttacked = scene.attacked.white.length + scene.attacked.black.length;
-  if (totalAttacked > 10) {
-    titles.push('Tactical Complexity');
-  }
-  
-  return titles.join(' - ');
-}
-
-/**
- * Format time in milliseconds to YouTube chapter format
- */
-function formatTime(timeMs: number): string {
-  const totalSeconds = Math.floor(timeMs / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
+/** Format milliseconds as YouTube chapter time. */
+export function formatTime(timeMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(timeMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-  
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
 }
 
-/**
- * Generate chapters text for video description
- */
-export function generateChaptersText(timeline: Timeline): string {
-  const chapters = generateChapters(timeline);
-  
-  let chaptersText = 'Chapters:\n';
-  chapters.forEach(chapter => {
-    chaptersText += `${chapter.time} ${chapter.title}\n`;
-  });
-  
-  return chaptersText;
-}
-
-/**
- * Generate chapters with enhanced titles based on game analysis
- */
-export function generateEnhancedChapters(timeline: Timeline): Chapter[] {
-  const chapters = generateChapters(timeline);
-  
-  // Enhance chapter titles with more descriptive text
-  return chapters.map(chapter => {
-    let enhancedTitle = chapter.title;
-    
-    // Enhance opening chapter
-    if (chapter.title === 'Opening') {
-      const eco = timeline.meta.eco;
-      if (eco) {
-        enhancedTitle = `Opening: ${eco}`;
-      } else {
-        enhancedTitle = 'Opening Moves';
-      }
-    }
-    
-    // Enhance middlegame chapter
-    if (chapter.title === 'Middlegame') {
-      enhancedTitle = 'Middlegame Tactics';
-    }
-    
-    // Enhance endgame chapter
-    if (chapter.title === 'Endgame') {
-      enhancedTitle = 'Endgame Technique';
-    }
-    
-    // Enhance conclusion chapter
-    if (chapter.title === 'Conclusion') {
-      const result = timeline.meta.result;
-      if (result) {
-        enhancedTitle = `Game Conclusion (${result})`;
-      } else {
-        enhancedTitle = 'Game Conclusion';
-      }
-    }
-    
-    return {
-      time: chapter.time,
-      title: enhancedTitle,
-    };
-  });
+export function generateChaptersText(script: Script): string {
+  const chapters = generateChapters(script);
+  if (chapters.length < 3) {
+    // Below three chapters YouTube ignores them entirely; emit nothing.
+    return '';
+  }
+  return ['Chapters:', ...chapters.map((c) => `${c.time} ${c.title}`)].join('\n');
 }

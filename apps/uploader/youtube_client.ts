@@ -3,8 +3,8 @@
  */
 
 import { google } from 'googleapis';
+import { createReadStream } from 'fs';
 import fs from 'fs/promises';
-import path from 'path';
 
 export interface UploadOptions {
   path: string;
@@ -66,17 +66,19 @@ export async function uploadVideo(options: UploadOptions): Promise<UploadResult>
       } as any,
     };
     
-    // Add scheduled publish time if provided
+    // Add scheduled publish time if provided.
+    // YouTube requires privacyStatus=private for scheduled publishing.
     if (options.publishAt) {
       videoMetadata.status.publishAt = options.publishAt;
+      videoMetadata.status.privacyStatus = 'private';
     }
-    
-    // Upload video
+
+    // Upload video (stream, not Buffer — resumable and memory-safe)
     const uploadResponse = await youtube.videos.insert({
       part: ['snippet', 'status'],
       requestBody: videoMetadata,
       media: {
-        body: await fs.readFile(options.path),
+        body: createReadStream(options.path),
       },
     });
     
@@ -118,7 +120,7 @@ export async function uploadThumbnail(videoId: string, thumbPath: string): Promi
   await youtube.thumbnails.set({
     videoId: videoId,
     media: {
-      body: await fs.readFile(thumbPath),
+      body: createReadStream(thumbPath),
     },
   });
 }

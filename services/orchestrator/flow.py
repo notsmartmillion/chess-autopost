@@ -339,6 +339,22 @@ def build_video(pgn_path: Path, tts: str, extra: Optional[List[str]] = None) -> 
     subprocess.check_call(cmd, cwd=str(ROOT))
 
 
+# Backends that produce the channel's actual narrator voice. Anything else is
+# a fallback that kept an unattended run alive, not something to publish.
+VOICE_BACKENDS = {"ttsapi", "qwen", "elevenlabs"}
+
+
+def voice_backend_used() -> Optional[str]:
+    """Which TTS backend actually produced the audio, per the manifest."""
+    manifest = OUT / "audio_manifest.json"
+    if not manifest.exists():
+        return None
+    try:
+        return json.loads(manifest.read_text(encoding="utf-8")).get("backend")
+    except (OSError, ValueError):
+        return None
+
+
 def have_upload_creds() -> bool:
     return all(
         os.getenv(k)
@@ -408,7 +424,7 @@ def main() -> int:
     ap.add_argument("--dry-run-upload", action="store_true", help="Run uploader in dry-run mode")
     ap.add_argument(
         "--tts",
-        choices=["auto", "qwen", "elevenlabs", "local", "silent"],
+        choices=["auto", "ttsapi", "qwen", "elevenlabs", "local", "silent"],
         default=os.getenv("TTS_BACKEND", "auto"),
     )
     ap.add_argument("--depth", type=int, default=None, help="Stockfish depth override")
@@ -459,13 +475,27 @@ def main() -> int:
     if archived:
         log(f"archived -> {archived.relative_to(ROOT)}")
 
+    backend = voice_backend_used()
     entry: Dict = {
         "date": date.today().isoformat(),
         "pgn": pgn_path.name,
         "archive": archived.name if archived else None,
         "sizeMb": round(size_mb, 1),
+        "voice": backend,
         "status": "rendered",
     }
+
+    # The voice layer degrades rather than dying, so a run survives the TTS
+    # service being down — but the resulting SAPI narration is not something to
+    # put on the channel. Keep the render, refuse the upload.
+    if args.tts in VOICE_BACKENDS or (args.tts == "auto" and os.getenv("TTS_VOICE", "").strip()):
+        if backend not in VOICE_BACKENDS:
+            log(f"ERROR: asked for '{args.tts}' but audio came from '{backend}' — "
+                "not uploading a fallback-voice render")
+            notify(f"Chess autopost: rendered with fallback voice '{backend}'; upload held.")
+            entry["status"] = "held_fallback_voice"
+            record_publication(entry)
+            return 1
 
     # 3) Upload (optional)
     if args.no_upload:

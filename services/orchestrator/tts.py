@@ -461,6 +461,99 @@ def _qwen_synthesize(
     return clips
 
 
+def _trim_lead_silence(path: Path, keep_ms: int = 60, threshold_db: float = -45.0) -> int:
+    """Strip dead air from the front of a clip, in place. Returns ms removed.
+
+    Qwen voices open with 0.6-0.8s of silence. Word timings are measured
+    against the whole file — by forced alignment and, more crudely, by
+    :func:`_estimate_words` — so that silence drags every cue earlier than the
+    word it names, and a piece starts moving before its square is spoken.
+    Trimming at the source keeps the cue contract honest for both timing paths
+    rather than teaching each one about the lead-in separately.
+    """
+    from pydub import AudioSegment
+    from pydub.silence import detect_leading_silence
+
+    seg = AudioSegment.from_wav(str(path))
+    lead = detect_leading_silence(seg, silence_threshold=threshold_db, chunk_size=5)
+    if lead >= len(seg):  # nothing but silence — leave it alone
+        return 0
+    trim = max(0, lead - keep_ms)
+    if trim <= 0:
+        return 0
+    seg[trim:].export(str(path), format="wav")
+    return trim
+
+
+def _ttsapi_synthesize(
+    lines: Sequence[Dict[str, str]], out_dir: Path, attempts: int = 3
+) -> Dict[str, Dict[str, Any]]:
+    """Narration via the local TTS service (D:\\ai\\projects\\tts-service).
+
+    Same Qwen3-TTS voices as the ``qwen`` backend, but the model stays resident
+    in the service across runs — so rendering the same game in several voices
+    doesn't reload weights every time. ``TTS_VOICE`` picks the saved profile.
+    """
+    import wave
+    import urllib.error
+    import urllib.request
+
+    base = os.getenv("TTS_API_URL", "http://127.0.0.1:8010").rstrip("/")
+    voice = os.getenv("TTS_VOICE", "").strip()
+    if not voice:
+        raise RuntimeError("TTS_VOICE must name a saved profile (GET /voices)")
+
+    clips: Dict[str, Dict[str, Any]] = {}
+    cache: Dict[str, Any] = {}
+    total = len(lines)
+    trimmed_ms = 0
+    for idx, item in enumerate(lines, start=1):
+        body = json.dumps({"text": item["text"], "voice": voice,
+                           "format": "wav"}).encode()
+        audio = b""
+        for attempt in range(1, attempts + 1):
+            req = urllib.request.Request(
+                f"{base}/tts", data=body,
+                headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=600) as resp:
+                    audio = resp.read()
+                break
+            except urllib.error.HTTPError as exc:
+                # A bad request or an unknown profile fails identically every
+                # time; only server-side faults are worth another go. Losing a
+                # whole batch to one blip is the expensive outcome here.
+                if exc.code < 500 or attempt == attempts:
+                    raise
+                reason = f"HTTP {exc.code}"
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                if attempt == attempts:
+                    raise
+                reason = str(exc)
+            print(f"[tts] line {idx}/{total} failed ({reason}); "
+                  f"retrying {attempt}/{attempts - 1}")
+            time.sleep(2 * attempt)
+
+        path = out_dir / f"{item['id']}.wav"
+        path.write_bytes(audio)
+        # Trim before measuring: durationMs feeds both the beat length and the
+        # move cue, so it has to describe speech, not the silence in front of it.
+        trimmed_ms += _trim_lead_silence(path)
+        with wave.open(str(path), "rb") as fh:
+            duration_ms = int(fh.getnframes() / float(fh.getframerate()) * 1000)
+        clips[item["id"]] = {
+            "file": path.name,
+            "durationMs": duration_ms,
+            "words": _align_words(path, item["text"], duration_ms, cache),
+        }
+        if idx % 10 == 0 or idx == total:
+            print(f"[tts] ttsapi {idx}/{total} ({voice})")
+    if trimmed_ms:
+        print(f"[tts] trimmed {trimmed_ms / 1000:.1f}s of lead-in silence "
+              f"across {total} clips")
+    return clips
+
+
 def _silent_synthesize(lines: Sequence[Dict[str, str]], out_dir: Path) -> Dict[str, Dict[str, Any]]:
     """Silent placeholders sized to the text — for fast structural test renders."""
     from pydub import AudioSegment
@@ -512,7 +605,9 @@ def synthesize(
 
     resolved = backend
     if backend == "auto":
-        if os.getenv("VOICE_REF_AUDIO", "").strip():
+        if os.getenv("TTS_VOICE", "").strip():
+            resolved = "ttsapi"
+        elif os.getenv("VOICE_REF_AUDIO", "").strip():
             resolved = "qwen"
         elif api_key and voice_id:
             resolved = "elevenlabs"
@@ -523,9 +618,10 @@ def synthesize(
         print("[tts] ELEVENLABS_API_KEY/VOICE_ID missing — falling back to local TTS")
         resolved = "local"
 
-    if resolved == "qwen":
+    if resolved in ("qwen", "ttsapi"):
         try:
-            clips = _qwen_synthesize(lines, out_dir)
+            clips = (_ttsapi_synthesize(lines, out_dir) if resolved == "ttsapi"
+                     else _qwen_synthesize(lines, out_dir))
             ext = "wav"
             manifest = {"backend": resolved, "ext": ext, "clips": clips}
             (out_dir.parent / "audio_manifest.json").write_text(
@@ -534,7 +630,7 @@ def synthesize(
             return manifest
         except Exception as exc:  # noqa: BLE001
             # A daily unattended run must still produce a video.
-            print(f"[tts] Qwen backend failed ({exc}); falling back to local TTS")
+            print(f"[tts] {resolved} backend failed ({exc}); falling back to local TTS")
             resolved = "local"
 
     if resolved == "silent":

@@ -167,9 +167,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--pgn", required=True, help="Path to the PGN to narrate")
     ap.add_argument(
         "--tts",
-        choices=["auto", "qwen", "elevenlabs", "local", "silent"],
+        choices=["auto", "ttsapi", "qwen", "elevenlabs", "local", "silent"],
         default=os.getenv("TTS_BACKEND", "auto"),
-        help="Voice backend (auto: qwen if VOICE_REF_AUDIO set, else elevenlabs if keyed, else local)",
+        help="Voice backend (auto: ttsapi if TTS_VOICE set, else qwen if VOICE_REF_AUDIO set, "
+             "else elevenlabs if keyed, else local)",
     )
     ap.add_argument("--depth", type=int, default=None, help="Stockfish depth override")
     ap.add_argument("--multipv", type=int, default=None, help="Stockfish MultiPV override")

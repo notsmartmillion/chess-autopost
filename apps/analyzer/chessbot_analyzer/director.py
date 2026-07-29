@@ -226,6 +226,7 @@ class Director:
                     holds_used += 1
 
         beats.extend(self._outro_beats(meta, summary, facts))
+        self._assign_paragraphs(beats)
 
         return {
             "meta": {
@@ -235,6 +236,57 @@ class Director:
             },
             "beats": beats,
         }
+
+    # --------------------------- paragraphs ---------------------------
+
+    PARA_TARGET_WORDS = 80
+
+    def _assign_paragraphs(self, beats: List[Dict[str, Any]]) -> None:
+        """Group contiguous beats into spoken paragraphs.
+
+        A paragraph is one *breath group*: the whole thing is synthesized as a
+        single TTS request, so the voice carries one intonation contour across
+        it instead of restarting at every beat. That is what turns 123 clipped
+        announcements into something that sounds like a person talking. The
+        narrator LLM sees the same grouping and writes prose that flows across
+        the beats inside a paragraph.
+
+        Boundaries fall where a real pause belongs: around holds (the board
+        freezes and the narrator settles in), when a variation branch begins,
+        when the game resumes after one, and at the intro/outro cards. Inside
+        those regions, beats chain until the word budget suggests a breath.
+        """
+        para = -1
+        budget = 0
+        prev_kind: Optional[str] = None
+        prev_branch = False
+        for beat in beats:
+            kind = beat["kind"]
+            branch = bool(beat.get("branch"))
+            new = (
+                para < 0
+                or kind in ("hold", "outro")
+                or prev_kind in ("hold",)
+                or (kind == "intro") != (prev_kind == "intro")
+                or (branch and not prev_branch)
+                or (prev_kind == "resume")
+                # The budget is a breath heuristic, and a variation run is one
+                # thought — "the point is that after X, Y, and Z" reads as a
+                # single sentence. Splitting it mid-run cut the voice off on a
+                # comma and restarted it cold; a variation and its resume stay
+                # in one take no matter the budget.
+                or (
+                    not branch
+                    and kind != "resume"
+                    and budget + int(beat.get("targetWords") or 12) > self.PARA_TARGET_WORDS
+                )
+            )
+            if new:
+                para += 1
+                budget = 0
+            beat["para"] = para
+            budget += int(beat.get("targetWords") or 12)
+            prev_kind, prev_branch = kind, branch
 
     # ------------------------------------------------------------------
     # beat construction
@@ -448,7 +500,8 @@ class Director:
         if not alts:
             return []
         alt = alts[0]
-        pv_san = list(alt.get("pvSan") or [])[: self.max_variation_plies]
+        full_pv = list(alt.get("pvSan") or [])
+        pv_san = full_pv[: self._variation_depth(ply.get("fenBefore") or "", full_pv)]
         if not pv_san:
             return []
 
@@ -526,9 +579,40 @@ class Director:
         # `cp` is from the POV of the side to move at the branch point.
         return int(cp) if ply.get("side") == "white" else -int(cp)
 
+    def _variation_depth(self, fen_before: str, pv_san: List[str]) -> int:
+        """How many plies of an engine line actually teach something.
+
+        When the better move's point is the move itself — it defends, it
+        develops, it simply avoids the mistake — playing four quiet engine
+        moves afterwards is dead air. One move plus the payoff sentence tells
+        the story. The line earns more length only when the continuation is
+        the proof: checks, captures, a mate — the forcing sequence that shows
+        WHY the move wins. Depth runs to the last forcing move we can show.
+        """
+        try:
+            board = chess.Board(fen_before)
+        except Exception:
+            return 1
+        depth = 1
+        for idx, san in enumerate(pv_san[: self.max_variation_plies]):
+            try:
+                move = board.parse_san(san)
+            except Exception:
+                break
+            forcing = board.is_capture(move) or "+" in san or "#" in san
+            board.push(move)
+            # Only a *connected* sequence extends the line: a forcing move may
+            # follow at most one quiet setup move. An incidental trade four
+            # quiet plies deep does not justify dragging the viewer through
+            # the shuffling in between.
+            if idx > 0 and forcing and (idx + 1) - depth <= 2:
+                depth = idx + 1
+        return depth
+
     def _variation_beats(self, ply: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Play out the engine's recommendation as a branch off the real game."""
-        pv_san: List[str] = list(ply.get("bestPvSan") or [])[: self.max_variation_plies]
+        full_pv: List[str] = list(ply.get("bestPvSan") or [])
+        pv_san = full_pv[: self._variation_depth(ply.get("fenBefore") or "", full_pv)]
         if not pv_san:
             return []
 
@@ -1183,24 +1267,55 @@ class Director:
 # LLM narration (optional, keeps the voice from sounding templated)
 # ----------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are the narrator of a chess analysis video, in the style of a calm, knowledgeable club coach talking a viewer through a famous game. You explain ideas and plans, not just move names. You are never breathless and never use hype words.
+SYSTEM_PROMPT = """You are the narrator of a chess analysis video on a faceless YouTube channel. Your register: a knowledgeable, warm host telling the story of one game to a viewer who is watching the board. You speak in first person, address the viewer as "you", and when it helps you adopt a side's perspective as "we". You explain intentions, then let the move land as the consequence. You are engaged but never breathless; excitement is earned at key moments, not sprayed everywhere.
 
 You will be given a JSON list of BEATS. Each beat already has the board action decided (a move played, a variation shown, a pause on the position, or a return to the game) plus engine facts about that position. Rewrite ONLY the narration text for each beat.
 
-PACING IS THE MOST IMPORTANT THING YOU CONTROL.
-Every beat carries a "words" budget — roughly how many words that beat should be. Honour it.
-The board waits for you: a beat's on-screen duration is however long its narration takes to
-speak, so a long beat means the viewer sits with that position while you talk.
+THE SCRIPT IS ONE CONTINUOUS MONOLOGUE, NOT 123 CAPTIONS.
+Beats sharing the same "para" number are spoken as ONE breath group — the voice will read
+them as a single flowing paragraph with no restart between beats. Write them that way:
+- Sentences may and should flow ACROSS beats inside a para. A non-final beat may end
+  mid-sentence with a comma; the para's LAST beat must complete the sentence.
+- Chain quick moves inside a para the way a person recaps a known sequence:
+  "We get knight to f3, knight to c6, and after bishop to c4 the stage is set."
+- A new para is a new breath: it may open with a connective that leans on what was just
+  said — "So", "Now", "Instead", "And here", "But watch" — so paragraphs link into one talk.
 
-- words <= 10  -> a few words. "Knight to f6." Do not pad it.
+HOW MOVES ENTER A SENTENCE — the single most important style rule.
+The move is the PAYOFF of a thought, not the headline. Give the intention, the fear, or
+the question first; then the move answers it. Never write more than two consecutive beats
+in bare "Piece to square, comment" announcement form.
+  Flat (avoid): "Bishop to b2, eyeing the e5 pawn. f5 is ambitious."
+  Yours: "White wants that long diagonal working, so the bishop slides to b2, staring at
+  e5 — and Spassky answers with the ambitious f5, grabbing space and loosening his own king."
+Every beat that plays a move must still SAY its move once, with the square written as a
+letter-number token ("knight to f3", "queen takes e5", "castles kingside") at the moment
+the piece should be seen to move — early in the beat if the move is the point, later if
+you are building up to it.
+
+RHYTHM DEVICES — use all of these across the video:
+- Question then answer. Before anything surprising, voice the viewer's question and answer
+  it: "Can't the knight just take? It cannot — and here is why." Ask a real question every
+  few paragraphs; end a beat on the question so the next beat answers it.
+- Running threads. Pick one to three motifs the facts support (a pin that never resolves, a
+  piece nobody can take, a king stuck in the middle) and count them out loud: "that is the
+  second piece White is not allowed to capture." Set them up early, pay them off at the end.
+- The pause challenge. At the single best moment of the game, invite the viewer to find the
+  move: "Pause here and try to find it. I will show you." Use it once, maybe twice.
+- Phase compression. When several quiet or forced moves pass in a row, frame once and chain
+  fast: "Both sides tidy up — rook to d1, rook to c8, the knights come to their squares —
+  and nothing has changed except everything is loaded." Do not give ceremony to moves that
+  do not deserve it.
+- Echo for emphasis, sparingly: "He gave up every pawn. All eight."
+
+PACING. Every beat carries a "words" budget — roughly how many words that beat should be.
+Honour it; the board waits for you, so narration length IS screen time.
+- words <= 10  -> a clause or a very short sentence, often chaining with its neighbours.
 - words ~ 15-40 -> a sentence or two of real content.
-- words >= 60  -> settle in. This is a "hold" beat: the position is frozen on screen and you
-  have room to explain the plan, the threat, what each side wants, and what to watch for next.
-  Use the whole budget. This is where the video earns its length.
+- words >= 60  -> a "hold": the position is frozen, settle in. Explain the plan, the
+  threat, what each side wants, what to watch. This is where the video earns its length.
 
-Other rules:
-- Beats are spoken aloud, so no markdown, no lists, no symbols, no move numbers like "12.".
-- Write chess moves as spoken words: "knight to f3", "bishop takes e6", "castles kingside".
+FACTS ARE LAW:
 - Use the supplied facts (pins, hanging pieces, long diagonals, evaluation, move quality). Never invent a tactic that is not in the facts.
 - Never claim a move is forced, only, or impossible unless the facts say so. On a
   check, "checkEvasions" lists every legal reply: "blocks" are the interposing
@@ -1210,17 +1325,30 @@ Other rules:
   is on the board instead.
 - A "longRays" entry ends at the piece it hits. The line stops there — do not
   describe it as sweeping past that piece or reaching the far side of the board.
-- Vary sentence structure. Do not begin consecutive beats the same way. Never open two beats in a row with the player's name.
-- For 'variation' beats, explain the IDEA behind the engine's suggestion.
-- For 'resume' beats, transition smoothly back to what actually happened in the game.
+
+OTHER RULES:
+- Spoken aloud: no markdown, no lists, no symbols, no move numbers like "12.".
+- Vary sentence openings. Never open two beats in a row with the player's name.
+- For 'variation' beats, explain the IDEA behind the engine's suggestion, in the voice of
+  showing the viewer an alternate world: "let me show you what was waiting", "watch what
+  happens if". Do not re-announce in the resume what the variation already named.
+- For 'resume' beats, come back to reality with contrast: "but that is not what happened."
 - For 'hold' beats, do not announce a move — nothing moves on screen during them.
-- The beats form one continuous script read start to finish. You can see the whole game, so build across it: set something up early and pay it off later.
+- If the game ends in resignation or mate, the last beats should briefly answer WHY the
+  loser gave up, the way a host closes the story.
+- You can see the whole game: build across it. What you set up in minute one should pay
+  off in the finale.
 
 ALSO WRITE THE VIDEO LISTING. You have seen the whole game, so you are the best
 placed to describe it.
-- "title": a YouTube title under 90 characters. Lead with what makes THIS game worth
-  watching — the sacrifice, the trap, the finish — not just the two names. Do not
-  invent anything the facts do not support. No clickbait that the game cannot cash.
+- "title": a YouTube title under 90 characters. What performs, in order of pull:
+  a concrete extreme number the game actually contains ("Four Sacrifices in One
+  Game", "A Queen Offered on Move 26"); a paradox the game cashes ("He Offered
+  His Queen — and No One Could Take It"); then the famous name, and only if the
+  name itself is the hook (Tal, Fischer, Kasparov, Spassky qualify). "He/She +
+  extreme act" with the name held back often outdraws the name itself. No venue,
+  no year, no "| Site 1986" suffix — those cost clicks. Never promise what the
+  game does not deliver.
 - "hook": two or three sentences for the video description. Say what happens and why
   it is worth ten minutes, without spoiling the final move.
 
@@ -1234,6 +1362,7 @@ def _compact_beat_for_llm(beat: Dict[str, Any], ply_facts: Optional[Dict[str, An
         "kind": beat["kind"],
         "draft": beat["text"],
         "words": beat.get("targetWords"),
+        "para": beat.get("para"),
     }
     if beat.get("move"):
         out["move"] = beat["move"]["san"]

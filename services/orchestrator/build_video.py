@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -79,6 +80,79 @@ def _clear_dir(path: Path, pattern: str = "*") -> None:
                 pass
 
 
+# "the knight on d3", "her rook back on f1" — a piece named on a square.
+_MENTION_RE = re.compile(
+    r"\b(king|queen|rook|bishop|knight|pawn)s?\s+"
+    r"(?:(?:sitting|standing|back|still|over|waiting|stuck)\s+)?"
+    r"(?:on|at)\s+([a-h][1-8])\b",
+    re.IGNORECASE,
+)
+
+_PIECE_BY_NAME = {
+    "king": 6, "queen": 5, "rook": 4, "bishop": 3, "knight": 2, "pawn": 1,
+}
+
+
+def _time_of_token(words: List[Dict[str, Any]], token: str, approx_idx: int) -> Optional[float]:
+    """Spoken time of the token occurrence nearest to a position in the text."""
+    best = None
+    best_dist = None
+    for i, w in enumerate(words):
+        if w.get("w") == token:
+            dist = abs(i - approx_idx)
+            if best_dist is None or dist < best_dist:
+                best, best_dist = w, dist
+    return float(best["s"]) if best else None
+
+
+def _mention_highlights(beat: Dict[str, Any], clip: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Squares to light up as the narrator names the piece standing on them.
+
+    Only *verified* mentions fire: the text must name a piece AND a square, and
+    the position on screen at the moment the words are spoken must actually
+    have that piece on that square. A hallucinated or transcribed-wrong square
+    simply never lights up — silence is the failure mode, not a wrong flash.
+    """
+    import chess
+
+    text = beat.get("text") or ""
+    words = clip.get("words") or []
+    if not text or not words:
+        return []
+
+    move = beat.get("move") or {}
+    skip = {move.get("from"), move.get("to")}
+    move_at = int(beat.get("moveAtMs") or 0)
+    already = {h.get("square") for h in (beat.get("highlights") or [])}
+
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for m in _MENTION_RE.finditer(text):
+        piece_name = m.group(1).lower()
+        square = m.group(2).lower()
+        if square in skip or square in seen or square in already:
+            continue
+        approx_idx = len(text[: m.start(2)].split())
+        spoken = _time_of_token(words, square, approx_idx)
+        if spoken is None:
+            continue
+        at_ms = int(spoken * 1000)
+        # The board shows prevFen until the move lands, fen after — verify
+        # against whichever position is on screen when the words are heard.
+        fen = beat.get("fen") if (not move or at_ms >= move_at) else beat.get("prevFen")
+        try:
+            piece = chess.Board(fen).piece_at(chess.parse_square(square))
+        except Exception:
+            continue
+        if piece is None or piece.piece_type != _PIECE_BY_NAME[piece_name]:
+            continue
+        seen.add(square)
+        out.append({"square": square, "atMs": at_ms})
+        if len(out) >= 3:
+            break
+    return out
+
+
 def resolve_timing(script: Dict[str, Any], manifest: Dict[str, Any]) -> None:
     """Attach measured durations and move-animation cues to each beat."""
     from tts import word_time
@@ -86,7 +160,13 @@ def resolve_timing(script: Dict[str, Any], manifest: Dict[str, Any]) -> None:
     clips = manifest.get("clips", {}) or {}
     for beat in script.get("beats", []):
         clip = clips.get(beat["id"])
-        if clip:
+        if clip and clip.get("chain"):
+            # Mid-paragraph beat: its clip is a frame-exact slice of one
+            # continuous take, and the next beat's clip is the very next
+            # sample. Padding or a minimum here would tear the sentence apart.
+            beat["audioFile"] = clip["file"]
+            beat["durationMs"] = int(clip["durationMs"])
+        elif clip:
             beat["audioFile"] = clip["file"]
             beat["durationMs"] = max(MIN_BEAT_MS, int(clip["durationMs"]) + BEAT_TAIL_MS)
         else:
@@ -110,6 +190,12 @@ def resolve_timing(script: Dict[str, Any], manifest: Dict[str, Any]) -> None:
 
         # Always leave room for the animation to complete inside the beat.
         beat["moveAtMs"] = max(0, min(move_at, beat["durationMs"] - MOVE_ANIM_MS))
+
+    # Second pass, after every moveAtMs is settled: light up squares the
+    # narrator talks about ("the knight on d3 is pinned"), timed to the words.
+    for beat in script.get("beats", []):
+        clip = clips.get(beat["id"])
+        beat["mentions"] = _mention_highlights(beat, clip) if clip else []
 
 
 def sync_to_public(script: Dict[str, Any], manifest: Dict[str, Any]) -> None:
@@ -244,7 +330,11 @@ def main() -> int:
     # --- 3) voice -------------------------------------------------------
     _clear_dir(AUDIO_DIR, "*.wav")
     _clear_dir(AUDIO_DIR, "*.mp3")
-    lines = [{"id": b["id"], "text": b["text"]} for b in beats if b.get("text")]
+    lines = [
+        {"id": b["id"], "text": b["text"], "para": b.get("para")}
+        for b in beats
+        if b.get("text")
+    ]
     print(f"[voice] synthesizing {len(lines)} lines (backend={args.tts})…")
     manifest = synthesize(lines, AUDIO_DIR, backend=args.tts)
     print(f"[voice] backend={manifest['backend']} ext={manifest['ext']}")

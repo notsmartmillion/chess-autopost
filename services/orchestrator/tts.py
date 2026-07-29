@@ -354,12 +354,37 @@ def _align_words(
     try:
         import whisperx  # type: ignore
 
-        device = "cuda" if os.getenv("QWEN_DEVICE", "cuda:0").startswith("cuda") else "cpu"
+        # CPU alignment is plenty fast (wav2vec2 is small); requesting cuda on
+        # a CPU-only torch install would throw and silently cost us alignment.
+        try:
+            import torch  # type: ignore
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            device = "cpu"
         if "align_model" not in model_cache:
             model_cache["align_model"], model_cache["align_meta"] = whisperx.load_align_model(
                 language_code="en", device=device
             )
-        audio = whisperx.load_audio(str(wav_path))
+        # whisperx.load_audio shells out to ffmpeg, which this box does not
+        # have. The clips are plain PCM wavs, so decode and resample natively.
+        import wave as _wave
+
+        import numpy as np  # type: ignore
+
+        with _wave.open(str(wav_path), "rb") as fh:
+            sr = fh.getframerate()
+            ch = fh.getnchannels()
+            pcm = np.frombuffer(fh.readframes(fh.getnframes()), dtype=np.int16)
+        if ch > 1:
+            pcm = pcm.reshape(-1, ch).mean(axis=1)
+        audio = pcm.astype(np.float32) / 32768.0
+        if sr != 16000:
+            import torchaudio  # type: ignore
+
+            audio = torchaudio.functional.resample(
+                torch.from_numpy(audio)[None], sr, 16000
+            )[0].numpy()
         aligned = whisperx.align(
             [{"start": 0.0, "end": duration_ms / 1000.0, "text": text}],
             model_cache["align_model"],
@@ -378,9 +403,9 @@ def _align_words(
                     )
         if words:
             return words
-    except ImportError:
-        print("[tts] whisperx not installed — using estimated word timings "
-              "(pip install whisperx for exact move cues)")
+    except ImportError as exc:
+        print(f"[tts] alignment unavailable ({exc}) — using estimated word "
+              "timings (pip install whisperx for exact move cues)")
         model_cache["align_warned"] = True
     except Exception as exc:  # noqa: BLE001
         if not model_cache.get("align_warned"):
@@ -485,16 +510,113 @@ def _trim_lead_silence(path: Path, keep_ms: int = 60, threshold_db: float = -45.
     return trim
 
 
+def _partition_para_words(
+    para_words: List[Dict[str, Any]], beat_texts: Sequence[str]
+) -> List[List[Dict[str, Any]]]:
+    """Assign a paragraph's aligned words back to the beats that spoke them.
+
+    The paragraph transcript is the beat texts joined with spaces, so the
+    expected token stream is known exactly. Forced alignment may drop the odd
+    word, so the walk is tolerant: each aligned word matches the next expected
+    token it can find within a short lookahead, and inherits that token's beat.
+    """
+    expected: List[Tuple[int, str]] = []  # (beat index, normalized token)
+    for bi, text in enumerate(beat_texts):
+        for raw in text.split():
+            tok = _norm_word(raw)
+            if tok:
+                expected.append((bi, tok))
+
+    out: List[List[Dict[str, Any]]] = [[] for _ in beat_texts]
+    ptr = 0
+    for word in para_words:
+        beat_idx = expected[min(ptr, len(expected) - 1)][0] if expected else 0
+        for look in range(ptr, min(ptr + 4, len(expected))):
+            if expected[look][1] == word["w"]:
+                beat_idx = expected[look][0]
+                ptr = look + 1
+                break
+        else:
+            ptr = min(ptr + 1, len(expected))
+        out[beat_idx].append(word)
+    return out
+
+
+def _split_para_wav(
+    wav_path: Path,
+    ids: Sequence[str],
+    beat_words: List[List[Dict[str, Any]]],
+    out_dir: Path,
+    fps: int = 30,
+) -> Dict[str, Dict[str, Any]]:
+    """Slice one paragraph wav into per-beat clips at frame-snapped boundaries.
+
+    The renderer plays one clip per beat back to back, so as long as every cut
+    lands exactly on a video-frame boundary (800 samples at 24 kHz / 30 fps),
+    the reassembled paragraph is sample-identical to the original take — the
+    beats inherit continuous speech instead of each recording its own.
+    """
+    import wave
+
+    with wave.open(str(wav_path), "rb") as fh:
+        sr = fh.getframerate()
+        params = fh.getparams()
+        raw = fh.readframes(fh.getnframes())
+    sw = params.sampwidth * params.nchannels
+    total_s = len(raw) / sw / sr
+
+    # A boundary sits midway through the pause between the last word of one
+    # beat and the first word of the next, snapped to the frame grid.
+    bounds = [0.0]
+    for k in range(1, len(ids)):
+        prev_words = beat_words[k - 1]
+        next_words = beat_words[k]
+        prev_end = prev_words[-1]["e"] if prev_words else bounds[-1]
+        next_start = next_words[0]["s"] if next_words else prev_end
+        mid = (prev_end + next_start) / 2.0
+        # The renderer shows every beat for at least one frame, so a zero-length
+        # slice would push all later audio out of sync. Keep cuts a frame apart.
+        mid = max(mid, bounds[-1] + 1.0 / fps)
+        bounds.append(min(round(mid * fps) / fps, total_s))
+    bounds.append(total_s)
+
+    clips: Dict[str, Dict[str, Any]] = {}
+    last = len(ids) - 1
+    for k, beat_id in enumerate(ids):
+        t0, t1 = bounds[k], max(bounds[k], bounds[k + 1])
+        s0, s1 = int(round(t0 * sr)) * sw, int(round(t1 * sr)) * sw
+        piece = out_dir / f"{beat_id}.wav"
+        with wave.open(str(piece), "wb") as fh:
+            fh.setparams(params)
+            fh.writeframes(raw[s0:s1])
+        clips[beat_id] = {
+            "file": piece.name,
+            "durationMs": int(round((t1 - t0) * 1000)),
+            "words": [
+                {"w": w["w"], "s": round(max(0.0, w["s"] - t0), 3),
+                 "e": round(max(0.0, w["e"] - t0), 3)}
+                for w in beat_words[k]
+            ],
+            # Mid-paragraph clips must play gaplessly: no tail padding, no
+            # minimum duration — the next beat's audio continues this breath.
+            "chain": k != last,
+        }
+    return clips
+
+
 def _ttsapi_synthesize(
-    lines: Sequence[Dict[str, str]], out_dir: Path, attempts: int = 3
+    lines: Sequence[Dict[str, Any]], out_dir: Path, attempts: int = 3, fps: int = 30
 ) -> Dict[str, Dict[str, Any]]:
     """Narration via the local TTS service (D:\\ai\\projects\\tts-service).
 
     Same Qwen3-TTS voices as the ``qwen`` backend, but the model stays resident
-    in the service across runs — so rendering the same game in several voices
-    doesn't reload weights every time. ``TTS_VOICE`` picks the saved profile.
+    in the service across runs. ``TTS_VOICE`` picks the saved profile.
+
+    Beats that share a ``para`` value are synthesized as ONE request — a single
+    breath group with one intonation contour — and the returned take is sliced
+    back into per-beat clips. Lines without ``para`` fall back to one request
+    per line, which is how every beat used to sound: 123 separate recordings.
     """
-    import wave
     import urllib.error
     import urllib.request
 
@@ -503,26 +625,27 @@ def _ttsapi_synthesize(
     if not voice:
         raise RuntimeError("TTS_VOICE must name a saved profile (GET /voices)")
 
-    clips: Dict[str, Dict[str, Any]] = {}
-    cache: Dict[str, Any] = {}
-    total = len(lines)
-    trimmed_ms = 0
-    for idx, item in enumerate(lines, start=1):
-        body = json.dumps({"text": item["text"], "voice": voice,
-                           "format": "wav"}).encode()
-        audio = b""
+    # Group contiguous lines by paragraph. None -> its own group.
+    groups: List[List[Dict[str, Any]]] = []
+    for item in lines:
+        para = item.get("para")
+        if groups and para is not None and groups[-1][0].get("para") == para:
+            groups[-1].append(item)
+        else:
+            groups.append([item])
+
+    def fetch(text: str, label: str) -> bytes:
+        body = json.dumps({"text": text, "voice": voice, "format": "wav"}).encode()
         for attempt in range(1, attempts + 1):
             req = urllib.request.Request(
                 f"{base}/tts", data=body,
                 headers={"Content-Type": "application/json"})
             try:
-                with urllib.request.urlopen(req, timeout=600) as resp:
-                    audio = resp.read()
-                break
+                with urllib.request.urlopen(req, timeout=900) as resp:
+                    return resp.read()
             except urllib.error.HTTPError as exc:
                 # A bad request or an unknown profile fails identically every
-                # time; only server-side faults are worth another go. Losing a
-                # whole batch to one blip is the expensive outcome here.
+                # time; only server-side faults are worth another go.
                 if exc.code < 500 or attempt == attempts:
                     raise
                 reason = f"HTTP {exc.code}"
@@ -530,27 +653,44 @@ def _ttsapi_synthesize(
                 if attempt == attempts:
                     raise
                 reason = str(exc)
-            print(f"[tts] line {idx}/{total} failed ({reason}); "
-                  f"retrying {attempt}/{attempts - 1}")
+            print(f"[tts] {label} failed ({reason}); retrying {attempt}/{attempts - 1}")
             time.sleep(2 * attempt)
+        raise RuntimeError("unreachable")
 
-        path = out_dir / f"{item['id']}.wav"
-        path.write_bytes(audio)
-        # Trim before measuring: durationMs feeds both the beat length and the
-        # move cue, so it has to describe speech, not the silence in front of it.
-        trimmed_ms += _trim_lead_silence(path)
-        with wave.open(str(path), "rb") as fh:
+    clips: Dict[str, Dict[str, Any]] = {}
+    cache: Dict[str, Any] = {}
+    total = len(groups)
+    trimmed_ms = 0
+    for gi, group in enumerate(groups, start=1):
+        text = " ".join(item["text"] for item in group)
+        audio = fetch(text, f"para {gi}/{total}")
+        para_path = out_dir / f"{group[0]['id']}.wav"
+        para_path.write_bytes(audio)
+        trimmed_ms += _trim_lead_silence(para_path)
+
+        import wave
+        with wave.open(str(para_path), "rb") as fh:
             duration_ms = int(fh.getnframes() / float(fh.getframerate()) * 1000)
-        clips[item["id"]] = {
-            "file": path.name,
-            "durationMs": duration_ms,
-            "words": _align_words(path, item["text"], duration_ms, cache),
-        }
-        if idx % 10 == 0 or idx == total:
-            print(f"[tts] ttsapi {idx}/{total} ({voice})")
+        words = _align_words(para_path, text, duration_ms, cache)
+
+        if len(group) == 1:
+            clips[group[0]["id"]] = {
+                "file": para_path.name,
+                "durationMs": duration_ms,
+                "words": words,
+            }
+        else:
+            ids = [item["id"] for item in group]
+            texts = [item["text"] for item in group]
+            per_beat = _partition_para_words(words, texts)
+            # The first slice overwrites the paragraph file (same name) — write
+            # slices only after the full take has been read into memory above.
+            clips.update(_split_para_wav(para_path, ids, per_beat, out_dir, fps=fps))
+        if gi % 5 == 0 or gi == total:
+            print(f"[tts] ttsapi para {gi}/{total} ({voice})")
     if trimmed_ms:
         print(f"[tts] trimmed {trimmed_ms / 1000:.1f}s of lead-in silence "
-              f"across {total} clips")
+              f"across {total} takes")
     return clips
 
 

@@ -16,7 +16,9 @@ export interface BoardArrow {
 export interface BoardHighlight {
   square: string;
   color?: string;
-  kind?: 'move' | 'alt' | 'danger' | 'good';
+  kind?: 'move' | 'alt' | 'danger' | 'good' | 'mention';
+  /** Absolute frame this highlight fades in; defaults to the move-reveal gate. */
+  startFrame?: number;
 }
 
 export interface AnimatedBoardProps {
@@ -32,6 +34,8 @@ export interface AnimatedBoardProps {
   checkSquare?: string | null;
   branch?: boolean;
   showCoordinates?: boolean;
+  /** Move-quality badge pinned to the destination square, e.g. "!!" */
+  badge?: { square: string; symbol: string; color: string } | null;
   style?: React.CSSProperties;
 }
 
@@ -213,6 +217,8 @@ const HIGHLIGHT_COLORS: Record<NonNullable<BoardHighlight['kind']>, string> = {
   alt: 'rgba(178,140,255,.45)',
   danger: 'rgba(255,93,93,.45)',
   good: 'rgba(61,220,151,.42)',
+  // Softer than the action highlights: the narrator is pointing, not warning.
+  mention: 'rgba(245,197,66,.30)',
 };
 
 const HIGHLIGHT_BORDERS: Record<NonNullable<BoardHighlight['kind']>, string> = {
@@ -220,6 +226,7 @@ const HIGHLIGHT_BORDERS: Record<NonNullable<BoardHighlight['kind']>, string> = {
   alt: 'rgba(178,140,255,.95)',
   danger: 'rgba(255,93,93,.95)',
   good: 'rgba(61,220,151,.95)',
+  mention: 'rgba(245,197,66,.75)',
 };
 
 /* -------------------------------------------------------------------------- */
@@ -253,6 +260,7 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
   checkSquare,
   branch = false,
   showCoordinates = true,
+  badge = null,
   style = {},
 }) => {
   const frame = useCurrentFrame();
@@ -516,6 +524,16 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
           const fill = h.color ?? HIGHLIGHT_COLORS[kind];
           const border = h.color ?? HIGHLIGHT_BORDERS[kind];
           const { x, y } = squareToXY(h.square, squareSize, flipped);
+          // A highlight with its own start frame (a spoken mention) fades in
+          // at that exact moment; the rest share the move-reveal gate.
+          const opacity =
+            h.startFrame != null
+              ? interpolate(frame, [h.startFrame, h.startFrame + 6], [0, 1], {
+                  extrapolateLeft: 'clamp',
+                  extrapolateRight: 'clamp',
+                  easing: Easing.out(Easing.cubic),
+                })
+              : highlightOpacity;
           return (
             <div
               key={`hl-${h.square}-${kind}-${i}`}
@@ -526,7 +544,7 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
                 width: squareSize,
                 height: squareSize,
                 background: fill,
-                opacity: highlightOpacity,
+                opacity,
                 borderRadius: Math.max(2, squareSize * 0.1),
                 boxShadow: `inset 0 0 0 ${Math.max(2, squareSize * 0.035)}px ${border}`,
               }}
@@ -612,6 +630,48 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
           )}
         </div>
       )}
+
+      {/* ------------------- move-quality badge (top layer) --------------- */}
+      {badge && isValidSquare(badge.square) && (() => {
+        // Lands with the piece: springs in as the move completes, sitting on
+        // the destination square's upper-right corner like a sticker.
+        const start = move ? moveStartFrame + duration : 0;
+        const t = frame - start;
+        const scale = spring({
+          frame: t,
+          fps,
+          config: { damping: 12, stiffness: 190, mass: 0.5 },
+          durationInFrames: Math.round(fps * 0.45),
+        });
+        if (t < 0) return null;
+        const { x, y } = squareToXY(badge.square, squareSize, flipped);
+        const d = squareSize * 0.52;
+        return (
+          <div
+            style={{
+              position: 'absolute',
+              left: x + squareSize - d * 0.62,
+              top: y - d * 0.34,
+              width: d,
+              height: d,
+              borderRadius: d / 2,
+              background: badge.color,
+              color: '#0d1117',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: d * (badge.symbol.length > 1 ? 0.5 : 0.62),
+              fontWeight: 800,
+              letterSpacing: badge.symbol.length > 1 ? -1 : 0,
+              boxShadow: `0 4px 14px rgba(0,0,0,.45), 0 0 0 ${Math.max(2, d * 0.06)}px rgba(13,17,23,.85)`,
+              transform: `scale(${scale})`,
+              pointerEvents: 'none',
+            }}
+          >
+            {badge.symbol}
+          </div>
+        );
+      })()}
 
       {/* --------------------------- branch chrome ----------------------- */}
       {branch && (

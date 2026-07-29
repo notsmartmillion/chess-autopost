@@ -43,6 +43,11 @@ export interface Beat {
   moveAtMs: number;
   /** File name inside /public/audio, e.g. "b0007.mp3". Null when silent. */
   audioFile: string | null;
+  /** Squares the narrator names ("the knight on d3"), verified against the
+   *  position and timed to the spoken word. */
+  mentions?: {square: string; atMs: number}[];
+  /** Breath group — beats sharing a para are one continuous TTS take. */
+  para?: number;
 }
 
 export interface ScriptMeta {

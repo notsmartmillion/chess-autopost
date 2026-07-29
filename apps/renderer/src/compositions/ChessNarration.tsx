@@ -38,6 +38,15 @@ const RAIL_W = 1920 - RAIL_X - 96;
 const PLAYERS_BOTTOM = 40 + 128 + 24;
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
+// Chess annotation marks, in the conventional colours. Deliberately only the
+// notable qualities: a badge on every move is a badge on none.
+const BADGE: Record<string, {symbol: string; color: string}> = {
+  brilliant: {symbol: '!!', color: '#3ddc97'},
+  great: {symbol: '!', color: '#5ac8fa'},
+  mistake: {symbol: '?', color: '#ff8c42'},
+  blunder: {symbol: '??', color: '#ff5d5d'},
+};
+
 const displayName = (raw?: string | null): string => {
   if (!raw) return 'Unknown';
   const v = raw.trim();
@@ -144,9 +153,6 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
   const eventLine = [meta.event, prettyDate(meta.date)].filter(Boolean).join(' · ');
   const channel = meta.channel ?? 'Quiet Chess';
 
-  const sideToMove: 'white' | 'black' =
-    (beat.fen ?? beat.prevFen ?? START_FEN).split(' ')[1] === 'b' ? 'black' : 'white';
-
   // Board props come from the current beat, but the board itself is mounted
   // ONCE for the whole video. Remounting it per beat destroyed and recreated
   // all 32 piece sprites at every boundary, which is what made the pieces
@@ -156,7 +162,55 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
   const moveStartFrame =
     (current?.from ?? 0) + Math.round(((beat.moveAtMs || 0) * fps) / 1000);
 
-  const moveNumber = beat.ply ? Math.ceil(beat.ply / 2) : null;
+  // Only the moves worth marking get a sticker on the board. "Good" and "best"
+  // are most of the game — badging them would make the mark meaningless.
+  const moveBadge =
+    beat.move && !beat.branch && beat.tag && BADGE[beat.tag]
+      ? {square: beat.move.to, ...BADGE[beat.tag]}
+      : null;
+
+  // The rail must not announce a move before the narrator does. The narration
+  // builds up to its moves, so a beat can spend seconds talking before the
+  // piece travels — during that time the MOVE panel, the quality tag, the move
+  // list, the eval bar and the player highlight all keep describing the LAST
+  // move that actually happened on screen, flipping only at this beat's cue.
+  // (Recomputed every frame by nature; the scan is ~100 segments, trivial.)
+  const revealed = !beat.move || frame >= moveStartFrame;
+  let lastRevealed: Beat | null = null;
+  if (!revealed) {
+    for (const seg of segments) {
+      if (!seg.beat.move) continue;
+      const at = seg.from + Math.round(((seg.beat.moveAtMs || 0) * fps) / 1000);
+      if (at <= frame) lastRevealed = seg.beat;
+      if (seg.from > frame) break;
+    }
+  }
+  const shownBeat = revealed ? beat : lastRevealed ?? beat;
+  const shownIsMove = Boolean(shownBeat.move) && (revealed || lastRevealed !== null);
+  // Before the very first reveal nothing has happened yet: empty move panel,
+  // empty list, level eval — exactly what a viewer should see.
+  const panelBeat = shownIsMove || !shownBeat.move
+    ? shownBeat
+    : {...shownBeat, move: null, tag: null, label: null, branch: false};
+  const moveNumber =
+    (shownIsMove || !beat.move) && shownBeat.ply ? Math.ceil(shownBeat.ply / 2) : null;
+  const shownPly = shownIsMove ? shownBeat.ply : null;
+  const shownEvalCp = shownIsMove || !beat.move ? shownBeat.evalCp : 0;
+
+  // Highlight whoever played the move currently on screen. The mover is the
+  // side to move in the position *before* that move — reading the post-move
+  // FEN lit up the opponent. Beats with no move fall back to whoever is on
+  // turn in the shown position.
+  const activeSide: 'white' | 'black' = (
+    shownIsMove && shownBeat.move
+      ? (shownBeat.prevFen ?? START_FEN).split(' ')[1]
+      : shownBeat.move
+        ? // Unrevealed move with nothing shown yet: whoever is about to move.
+          (shownBeat.prevFen ?? START_FEN).split(' ')[1]
+        : (shownBeat.fen ?? shownBeat.prevFen ?? START_FEN).split(' ')[1]
+  ) === 'b'
+    ? 'black'
+    : 'white';
 
   return (
     <AbsoluteFill
@@ -205,10 +259,20 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           moveStartFrame={moveStartFrame}
           moveDurationFrames={Math.round(fps * 0.4)}
           size={BOARD}
-          highlights={beat.highlights}
+          highlights={[
+            ...(beat.highlights ?? []),
+            // Squares the narrator names light up on the spoken word.
+            ...(beat.mentions ?? []).map((m) => ({
+              square: m.square,
+              kind: 'mention' as const,
+              startFrame:
+                (current?.from ?? 0) + Math.round((m.atMs * fps) / 1000),
+            })),
+          ]}
           arrows={beat.arrows}
           checkSquare={beat.checkSquare}
           branch={beat.branch}
+          badge={moveBadge}
           showCoordinates
         />
       </div>
@@ -245,8 +309,8 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           gap: 8,
         }}
       >
-        <PlayerRow name={black} side="black" active={sideToMove === 'black'} />
-        <PlayerRow name={white} side="white" active={sideToMove === 'white'} />
+        <PlayerRow name={black} side="black" active={activeSide === 'black'} />
+        <PlayerRow name={white} side="white" active={activeSide === 'white'} />
       </div>
 
       {/* Evaluation — a vertical column hugging the board */}
@@ -257,7 +321,7 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           top: BOARD_Y,
         }}
       >
-        <EvalColumn cp={beat.evalCp} height={BOARD - 44} />
+        <EvalColumn cp={shownEvalCp} height={BOARD - 44} />
       </div>
 
       {/* Analysis rail */}
@@ -273,8 +337,12 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           gap: 20,
         }}
       >
-        <CurrentMove beat={beat} moveNumber={moveNumber} isBlack={beat.ply ? beat.ply % 2 === 0 : false} />
-        <MoveList entries={moveEntries} currentPly={beat.ply} rows={4} />
+        <CurrentMove
+          beat={panelBeat}
+          moveNumber={moveNumber}
+          isBlack={shownBeat.ply ? shownBeat.ply % 2 === 0 : false}
+        />
+        <MoveList entries={moveEntries} currentPly={shownPly} rows={4} />
       </div>
 
       {/* Intro / outro card */}

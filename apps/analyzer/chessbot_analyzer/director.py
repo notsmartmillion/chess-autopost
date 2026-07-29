@@ -76,7 +76,9 @@ ARROW_COOLDOWN_PLIES = 14
 WORD_BUDGET = {
     "intro": 45,
     "intro_second": 30,
-    "outro": 40,
+    # The close carries the resignation reason, the payoff of the running
+    # thread, and the sign-off — 40 words could only fit the sign-off.
+    "outro": 70,
     "hold": 90,
     "hold_major": 130,
     "move_book": 8,
@@ -133,7 +135,7 @@ class Director:
 
     def __init__(
         self,
-        channel_name: str = "Quiet Chess",
+        channel_name: str = "Midnight Chess",
         *,
         seed: Optional[int] = None,
         max_variation_plies: int = 4,
@@ -885,10 +887,26 @@ class Director:
                 return True
             return False
 
+        def move_touches(*squares: Optional[str]) -> bool:
+            """Did the move just played change anything on this line?
+
+            An arrow is a statement about the move on screen. Drawing a line
+            the move had nothing to do with — a queen's diagonal, moments
+            after a knight recaptured elsewhere — reads as a non sequitur, so
+            a feature only earns an arrow when the move created, opened or
+            landed on it.
+            """
+            live = {s for s in squares if s}
+            return bool(live & {frm, to})
+
         # A pin is the single most narratable feature — show the ray.
         for pin in (features.get("pins") or [])[:1]:
             pinned, attacker, king = pin.get("pinned"), pin.get("attacker"), pin.get("king")
             if not (attacker and king):
+                continue
+            # The pin must be this move's doing: the pinner arrived, the pinned
+            # piece stepped onto the line, or the king moved onto it.
+            if not move_touches(attacker, pinned, king):
                 continue
             if not may_draw(f"pin:{attacker}->{king}", attacker == to):
                 continue
@@ -913,6 +931,12 @@ class Director:
                 # Point at the piece under attack, not at the board edge. The
                 # ray runs to the edge geometrically, but drawing that far sends
                 # the arrow straight through the very piece it is about to hit.
+                #
+                # And only when this move is the reason the line matters: the
+                # slider landed on it, the target stepped into it, or the move
+                # vacated a square that was blocking it.
+                if not move_touches(origin, target, *path[: path.index(target) + 1]):
+                    continue
                 if not may_draw(f"ray:{origin}->{target}", origin == to):
                     continue
                 arrows.append({"from": origin, "to": target, "color": COLOR_MOVE})
@@ -1315,6 +1339,19 @@ Honour it; the board waits for you, so narration length IS screen time.
 - words >= 60  -> a "hold": the position is frozen, settle in. Explain the plan, the
   threat, what each side wants, what to watch. This is where the video earns its length.
 
+NEVER SPEAK IN ENGINE UNITS. "evalCp" and "cpLoss" are there to tell you HOW MUCH
+something matters — they are not vocabulary. Say the verdict in plain words and let
+the board justify it. A viewer hears "two pawns better" as arithmetic; they hear
+"the knight is pinned and nobody can defend it" as chess.
+  Banned: "the evaluation drifts", "worth more than a pawn and a half", "a clear
+  extra pawn's worth of pressure", "two pawns down", "losing by more than five",
+  "plus one point three".
+  Instead: "level", "a shade more comfortable", "clearly better", "winning
+  comfortably", "completely lost" — then name the reason on the board: the piece
+  that cannot move, the king with no shelter, the pawn nobody can defend.
+Material you can always state plainly, because it is a fact and not a score: "a
+pawn up", "a piece down", "rook for knight".
+
 FACTS ARE LAW:
 - Use the supplied facts (pins, hanging pieces, long diagonals, evaluation, move quality). Never invent a tactic that is not in the facts.
 - Never claim a move is forced, only, or impossible unless the facts say so. On a
@@ -1334,8 +1371,13 @@ OTHER RULES:
   happens if". Do not re-announce in the resume what the variation already named.
 - For 'resume' beats, come back to reality with contrast: "but that is not what happened."
 - For 'hold' beats, do not announce a move — nothing moves on screen during them.
-- If the game ends in resignation or mate, the last beats should briefly answer WHY the
-  loser gave up, the way a host closes the story.
+- THE ENDING. The outro is the last thing anyone hears, so do not spend it on
+  admin. In order: say why the loser stopped — the concrete reason, a piece down
+  with a king in the open, not "he was worse"; then land the thread you have been
+  running all video, so the finish pays off the opening promise ("one pinned
+  knight decided the whole thing, and it never moved a square"); then one short,
+  warm sign-off. Never open the outro with "Thank you for watching". Do not
+  recap the move order, and do not add a moral about chess in general.
 - You can see the whole game: build across it. What you set up in minute one should pay
   off in the finale.
 
@@ -1579,7 +1621,7 @@ def narrate_with_llm(
 def build_script(
     facts: Dict[str, Any],
     *,
-    channel_name: str = "Quiet Chess",
+    channel_name: str = "Midnight Chess",
     use_llm: bool = True,
     seed: Optional[int] = None,
 ) -> Dict[str, Any]:

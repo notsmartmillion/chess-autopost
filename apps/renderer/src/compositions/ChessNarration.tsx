@@ -34,8 +34,9 @@ const BOARD_Y = (1080 - BOARD) / 2;
 // further right than the board's edge alone would suggest.
 const RAIL_X = BOARD_X + BOARD + 84;
 const RAIL_W = 1920 - RAIL_X - 96;
-// Where the players panel ends and the rail below it begins.
-const PLAYERS_BOTTOM = 40 + 128 + 24;
+// Where the players panel ends and the rail below it begins. Two 96px portrait
+// rows plus the panel's own padding.
+const PLAYERS_BOTTOM = 40 + 276 + 24;
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 // Chess annotation marks, in the conventional colours. Deliberately only the
@@ -151,7 +152,7 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
   const white = displayName(meta.white);
   const black = displayName(meta.black);
   const eventLine = [meta.event, prettyDate(meta.date)].filter(Boolean).join(' · ');
-  const channel = meta.channel ?? 'Quiet Chess';
+  const channel = meta.channel ?? 'Midnight Chess';
 
   // Board props come from the current beat, but the board itself is mounted
   // ONCE for the whole video. Remounting it per beat destroyed and recreated
@@ -309,8 +310,18 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           gap: 8,
         }}
       >
-        <PlayerRow name={black} side="black" active={activeSide === 'black'} />
-        <PlayerRow name={white} side="white" active={activeSide === 'white'} />
+        <PlayerRow
+          name={black}
+          side="black"
+          active={activeSide === 'black'}
+          portrait={meta.blackPortrait}
+        />
+        <PlayerRow
+          name={white}
+          side="white"
+          active={activeSide === 'white'}
+          portrait={meta.whitePortrait}
+        />
       </div>
 
       {/* Evaluation — a vertical column hugging the board */}
@@ -342,7 +353,7 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           moveNumber={moveNumber}
           isBlack={shownBeat.ply ? shownBeat.ply % 2 === 0 : false}
         />
-        <MoveList entries={moveEntries} currentPly={shownPly} rows={4} />
+        <MoveList entries={moveEntries} currentPly={shownPly} rows={3} />
       </div>
 
       {/* Intro / outro card */}

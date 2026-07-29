@@ -94,7 +94,7 @@ export const Thumbnail: React.FC<ThumbnailProps> = ({script}) => {
       />
 
       <div style={{position: 'absolute', left: 74, top: 44}}>
-        <Wordmark name={meta.channel ?? 'Quiet Chess'} />
+        <Wordmark name={meta.channel ?? 'Midnight Chess'} />
       </div>
 
       <div

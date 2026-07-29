@@ -1,5 +1,5 @@
 import React from 'react';
-import {interpolate, Easing, useCurrentFrame} from 'remotion';
+import {Img, interpolate, Easing, staticFile, useCurrentFrame} from 'remotion';
 import type {Beat} from '../types/script';
 
 export const THEME = {
@@ -15,14 +15,19 @@ export const THEME = {
   bad: '#ff5d5d',
 } as const;
 
-const QUALITY_STYLE: Record<string, {label: string; color: string}> = {
-  brilliant: {label: 'BRILLIANT', color: THEME.good},
-  great: {label: 'GREAT', color: THEME.good},
-  best: {label: 'BEST', color: THEME.accent},
-  book: {label: 'THEORY', color: THEME.muted},
-  inaccuracy: {label: 'INACCURACY', color: THEME.warn},
-  mistake: {label: 'MISTAKE', color: '#ff8c42'},
-  blunder: {label: 'BLUNDER', color: THEME.bad},
+// Glyphs are the annotation language every chess audience already reads, so the
+// badge says "??" and the label underneath says what that means.
+const QUALITY_STYLE: Record<
+  string,
+  {label: string; color: string; glyph: string}
+> = {
+  brilliant: {label: 'BRILLIANT', color: THEME.good, glyph: '!!'},
+  great: {label: 'GREAT', color: THEME.good, glyph: '!'},
+  best: {label: 'BEST', color: THEME.accent, glyph: '★'},
+  book: {label: 'THEORY', color: THEME.muted, glyph: '≡'},
+  inaccuracy: {label: 'INACCURACY', color: THEME.warn, glyph: '?!'},
+  mistake: {label: 'MISTAKE', color: '#ff8c42', glyph: '?'},
+  blunder: {label: 'BLUNDER', color: THEME.bad, glyph: '??'},
 };
 
 const Panel: React.FC<{children: React.ReactNode; style?: React.CSSProperties}> = ({
@@ -56,46 +61,72 @@ const Label: React.FC<{children: React.ReactNode}> = ({children}) => (
   </div>
 );
 
+const PORTRAIT = 96;
+
+/** Neutral bust used when we have no photo of a player — every game renders. */
+const PortraitPlaceholder: React.FC<{side: 'white' | 'black'}> = ({side}) => (
+  <svg width={PORTRAIT} height={PORTRAIT} viewBox="0 0 96 96" aria-hidden>
+    <rect width="96" height="96" fill={side === 'white' ? '#2a323f' : '#1b222c'} />
+    <circle cx="48" cy="37" r="16" fill="#5d6b7f" />
+    <path d="M16 96c0-17.7 14.3-32 32-32s32 14.3 32 32z" fill="#5d6b7f" />
+  </svg>
+);
+
 export const PlayerRow: React.FC<{
   name: string;
   side: 'white' | 'black';
   active: boolean;
-}> = ({name, side, active}) => (
+  portrait?: string | null;
+}> = ({name, side, active, portrait}) => (
   <div
     style={{
       display: 'flex',
       alignItems: 'center',
-      gap: 16,
-      padding: '12px 14px',
-      borderRadius: 10,
+      gap: 18,
+      padding: 12,
+      borderRadius: 12,
       background: active ? 'rgba(90,200,250,0.10)' : 'transparent',
       border: `1px solid ${active ? 'rgba(90,200,250,0.35)' : 'transparent'}`,
     }}
   >
     <div
       style={{
-        width: 20,
-        height: 20,
-        borderRadius: '50%',
-        background: side === 'white' ? '#eef2f7' : '#28313f',
-        border: `2px solid ${side === 'white' ? '#c3cddb' : '#4a5769'}`,
-        flexShrink: 0,
-      }}
-    />
-    <div
-      style={{
-        flex: 1,
-        fontSize: 34,
-        color: active ? THEME.text : THEME.muted,
-        whiteSpace: 'nowrap',
+        width: PORTRAIT,
+        height: PORTRAIT,
+        borderRadius: 10,
         overflow: 'hidden',
-        textOverflow: 'ellipsis',
+        flexShrink: 0,
+        background: '#1b222c',
+        // Grayscale keeps mismatched press photos from fighting the palette;
+        // the side to move comes up to full strength.
+        filter: active ? 'grayscale(1) contrast(1.05)' : 'grayscale(1) brightness(0.68)',
+        boxShadow: `inset 0 0 0 2px ${active ? 'rgba(90,200,250,0.55)' : THEME.panelEdge}`,
       }}
     >
-      {name}
+      {portrait ? (
+        <Img
+          src={staticFile(`portraits/${portrait}`)}
+          style={{width: '100%', height: '100%', objectFit: 'cover'}}
+        />
+      ) : (
+        <PortraitPlaceholder side={side} />
+      )}
     </div>
-    <div style={{fontSize: 16, letterSpacing: 2, color: THEME.muted}}>
-      {side.toUpperCase()}
+    <div style={{flex: 1, minWidth: 0}}>
+      <div
+        style={{
+          fontSize: 34,
+          color: active ? THEME.text : THEME.muted,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}
+      >
+        {name}
+      </div>
+      <div style={{fontSize: 16, letterSpacing: 2, color: THEME.muted, marginTop: 6}}>
+        {side.toUpperCase()}
+      </div>
     </div>
   </div>
 );
@@ -254,7 +285,9 @@ export const CurrentMove: React.FC<{
   return (
     <Panel>
       <Label>Move</Label>
-      <div style={{display: 'flex', alignItems: 'baseline', gap: 16}}>
+      {/* The badge rides the move's top-right corner, the way annotation
+          symbols sit beside a move everywhere else in chess. */}
+      <div style={{display: 'inline-flex', alignItems: 'flex-start', gap: 10}}>
         <div
           style={{
             fontSize: 58,
@@ -262,23 +295,42 @@ export const CurrentMove: React.FC<{
             fontVariantNumeric: 'tabular-nums',
             transform: `scale(${pop})`,
             transformOrigin: 'left bottom',
+            lineHeight: 1.05,
           }}
         >
           {moveNumber ? `${moveNumber}${isBlack ? '…' : '.'}` : ''} {san ?? '—'}
         </div>
+        {quality && (
+          <div
+            style={{
+              marginTop: 2,
+              minWidth: 46,
+              height: 46,
+              padding: '0 10px',
+              borderRadius: 23,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: 26,
+              fontWeight: 700,
+              color: '#0b0e13',
+              background: quality.color,
+              boxShadow: `0 0 0 4px ${quality.color}33`,
+              transform: `scale(${pop})`,
+              transformOrigin: 'left top',
+            }}
+          >
+            {quality.glyph}
+          </div>
+        )}
       </div>
       {quality && (
         <div
           style={{
-            display: 'inline-block',
-            marginTop: 16,
-            padding: '7px 16px',
-            borderRadius: 8,
-            fontSize: 19,
-            letterSpacing: 2,
+            marginTop: 12,
+            fontSize: 18,
+            letterSpacing: 2.4,
             color: quality.color,
-            border: `1px solid ${quality.color}`,
-            background: `${quality.color}1a`,
           }}
         >
           {quality.label}
@@ -299,7 +351,7 @@ export const MoveList: React.FC<{
   entries: MoveListEntry[];
   currentPly: number | null;
   rows?: number;
-}> = ({entries, currentPly, rows = 4}) => {
+}> = ({entries, currentPly, rows = 3}) => {
   const currentMoveNumber = currentPly ? Math.ceil(currentPly / 2) : 0;
   const currentIsWhite = currentPly ? currentPly % 2 === 1 : true;
 
@@ -314,7 +366,7 @@ export const MoveList: React.FC<{
   const window = played.slice(Math.max(0, played.length - rows));
 
   return (
-    <Panel style={{flex: 1, display: 'flex', flexDirection: 'column'}}>
+    <Panel style={{display: 'flex', flexDirection: 'column'}}>
       <Label>Moves</Label>
       <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
         {window.map((entry) => {

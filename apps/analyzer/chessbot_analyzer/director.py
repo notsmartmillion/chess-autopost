@@ -1631,6 +1631,7 @@ def build_script(
     if use_llm:
         if narrate_with_llm(script, facts):
             script["meta"]["narration"] = "llm"
+            _reflow_paragraphs(script["beats"])
             logger.info("Narration: LLM")
         else:
             script["meta"]["narration"] = "template"
@@ -1638,6 +1639,45 @@ def build_script(
     else:
         script["meta"]["narration"] = "template"
     return script
+
+
+_SENTENCE_END = tuple('.!?"”’)')
+
+
+def _reflow_paragraphs(beats: List[Dict[str, Any]]) -> None:
+    """Re-derive breath groups from the narration that was actually written.
+
+    The paragraph numbers handed to the narrator are a *hint*: they tell it
+    where a breath belongs so it can let sentences run across beats. But the
+    model writes prose, not to a word budget, and it will happily carry a
+    clause past a boundary we guessed at. Splitting the audio there ends a take
+    on a comma — the voice stops mid-thought and the next take opens cold.
+
+    So the boundary only survives if the beat before it actually finishes a
+    sentence. Anything else merges forward, and the whole thought is spoken in
+    one take.
+    """
+    if not beats:
+        return
+    original = [b.get("para") for b in beats]
+    para = 0
+    merged = 0
+    beats[0]["para"] = 0
+    for i in range(1, len(beats)):
+        boundary = original[i] != original[i - 1]
+        if boundary:
+            prev = (beats[i - 1].get("text") or "").rstrip()
+            if prev and not prev.endswith(_SENTENCE_END):
+                boundary = False
+                merged += 1
+        if boundary:
+            para += 1
+        beats[i]["para"] = para
+    if merged:
+        logger.info(
+            f"Paragraphs: merged {merged} boundary(ies) that fell mid-sentence "
+            f"({len(set(original))} -> {para + 1} takes)"
+        )
 
 
 def save_script(script: Dict[str, Any], path: str | Path) -> None:

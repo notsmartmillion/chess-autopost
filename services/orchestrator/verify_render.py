@@ -607,6 +607,11 @@ def sample_frames(script: Dict[str, Any], rep: Report) -> None:
         return
     outdir = OUT / "verify_frames"
     outdir.mkdir(parents=True, exist_ok=True)
+    # Clear first: beat ids repeat across games, so a leftover frame from the
+    # previous render is indistinguishable from this one's and would be reviewed
+    # as if it were current.
+    for stale in outdir.glob("*.png"):
+        stale.unlink(missing_ok=True)
     npm = "npm.cmd" if os.name == "nt" else "npm"
     for label, frame in picks:
         dest = outdir / f"{frame:06d}_{label}.png"

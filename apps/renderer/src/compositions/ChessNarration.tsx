@@ -170,45 +170,47 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
       ? {square: beat.move.to, ...BADGE[beat.tag]}
       : null;
 
-  // The rail must not announce a move before the narrator does. The narration
-  // builds up to its moves, so a beat can spend seconds talking before the
-  // piece travels — during that time the MOVE panel, the quality tag, the move
-  // list, the eval bar and the player highlight all keep describing the LAST
-  // move that actually happened on screen, flipping only at this beat's cue.
-  // (Recomputed every frame by nature; the scan is ~100 segments, trivial.)
+  // The rail must never run ahead of the narrator, and never fall behind the
+  // game either. It always describes the last REAL move the viewer has seen
+  // land — so it holds steady through the seconds a beat spends talking before
+  // its piece travels, through a variation, and through the hold and resume
+  // beats on either side of one, which carry no move of their own.
+  // (Recomputed per frame by nature; the scan is ~100 segments, trivial.)
   const revealed = !beat.move || frame >= moveStartFrame;
-  let lastRevealed: Beat | null = null;
-  if (!revealed) {
-    for (const seg of segments) {
-      if (!seg.beat.move) continue;
-      const at = seg.from + Math.round(((seg.beat.moveAtMs || 0) * fps) / 1000);
-      if (at <= frame) lastRevealed = seg.beat;
-      if (seg.from > frame) break;
-    }
+  let lastReal: Beat | null = null;
+  for (const seg of segments) {
+    if (seg.from > frame) break;
+    const bt = seg.beat;
+    // Variation moves never happened, so they must not enter the game record.
+    if (!bt.move || bt.branch) continue;
+    const at = seg.from + Math.round(((bt.moveAtMs || 0) * fps) / 1000);
+    if (at <= frame) lastReal = bt;
   }
-  const shownBeat = revealed ? beat : lastRevealed ?? beat;
-  const shownIsMove = Boolean(shownBeat.move) && (revealed || lastRevealed !== null);
-  // Before the very first reveal nothing has happened yet: empty move panel,
-  // empty list, level eval — exactly what a viewer should see.
-  const panelBeat = shownIsMove || !shownBeat.move
-    ? shownBeat
-    : {...shownBeat, move: null, tag: null, label: null, branch: false};
-  const moveNumber =
-    (shownIsMove || !beat.move) && shownBeat.ply ? Math.ceil(shownBeat.ply / 2) : null;
-  const shownPly = shownIsMove ? shownBeat.ply : null;
-  const shownEvalCp = shownIsMove || !beat.move ? shownBeat.evalCp : 0;
 
-  // Highlight whoever played the move currently on screen. The mover is the
-  // side to move in the position *before* that move — reading the post-move
-  // FEN lit up the opponent. Beats with no move fall back to whoever is on
-  // turn in the shown position.
+  // A variation shows its own card; a hold keeps its "reading the position"
+  // card. Otherwise: this beat's move once it has landed, else the game so far.
+  const railBeat: Beat | null =
+    beat.branch || beat.kind === 'hold'
+      ? beat
+      : beat.move && revealed
+        ? beat
+        : lastReal;
+
+  // Before the first move lands there is genuinely nothing to report.
+  const panelBeat: Beat =
+    railBeat ?? {...beat, move: null, tag: null, label: null, branch: false};
+  const numberFrom = railBeat?.move && !railBeat.branch ? railBeat : lastReal;
+  const moveNumber = numberFrom?.ply ? Math.ceil(numberFrom.ply / 2) : null;
+  const shownPly = lastReal?.ply ?? null;
+  const shownEvalCp = (beat.branch ? beat.evalCp : railBeat?.evalCp) ?? 0;
+
+  // Highlight whoever played the move on screen — the side to move in the
+  // position *before* it. Reading the post-move FEN lit up the opponent.
+  const sideSource = railBeat ?? beat;
   const activeSide: 'white' | 'black' = (
-    shownIsMove && shownBeat.move
-      ? (shownBeat.prevFen ?? START_FEN).split(' ')[1]
-      : shownBeat.move
-        ? // Unrevealed move with nothing shown yet: whoever is about to move.
-          (shownBeat.prevFen ?? START_FEN).split(' ')[1]
-        : (shownBeat.fen ?? shownBeat.prevFen ?? START_FEN).split(' ')[1]
+    sideSource.move
+      ? (sideSource.prevFen ?? START_FEN).split(' ')[1]
+      : (sideSource.fen ?? sideSource.prevFen ?? START_FEN).split(' ')[1]
   ) === 'b'
     ? 'black'
     : 'white';
@@ -351,7 +353,7 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
         <CurrentMove
           beat={panelBeat}
           moveNumber={moveNumber}
-          isBlack={shownBeat.ply ? shownBeat.ply % 2 === 0 : false}
+          isBlack={numberFrom?.ply ? numberFrom.ply % 2 === 0 : false}
         />
         <MoveList entries={moveEntries} currentPly={shownPly} rows={3} />
       </div>

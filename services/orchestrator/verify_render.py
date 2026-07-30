@@ -69,8 +69,9 @@ SPOKEN_BANS: List[Tuple[str, str]] = [
     ("symbol", r"[#@%&*/\\_=]|(?<![a-h])\b\d{1,3}\.\s"),
     ("engine units", r"pawn'?s?\s+worth\s+of|\bevaluation\b|\bdeficit\b|"
                      r"losing by|\bcentipawn|\bcp\b|\+\d\.\d"),
-    ("unverified claim", r"cannot block|can't block|no way to block|only move|"
-                         r"forced to move|has to move|no choice"),
+    # No blanket ban on "the king has to move": that sentence is *correct* when
+    # the engine says it is, and check_narration cross-checks each one against
+    # checkEvasions. A pattern match here only duplicated that as noise.
 ]
 
 
@@ -287,12 +288,18 @@ def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) 
     # "The king has to move" is only true when the engine says so.
     lies = []
     for beat in beats:
-        ev = ((by_ply.get(beat.get("ply")) or {}).get("features") or {}).get("checkEvasions")
+        # Only claims about a position we have facts for can be checked. An
+        # outro summarising the whole game has no ply, and "it only moved once"
+        # is not a claim about check evasions.
+        if beat.get("ply") is None:
+            continue
+        ev = ((by_ply.get(beat["ply"]) or {}).get("features") or {}).get("checkEvasions")
         text = beat["text"].lower()
         if re.search(r"cannot block|can't block|no way to block", text):
             if not ev or ev.get("canBlock"):
                 lies.append(beat["id"])
-        if re.search(r"has to move|must move|forced to move|only move", text):
+        # Word boundaries matter: "it only moved once" is not "the only move".
+        if re.search(r"\bhas to move\b|\bmust move\b|\bforced to move\b|\bonly move\b", text):
             if not ev or not ev.get("onlyKingMoves"):
                 lies.append(beat["id"])
     if lies:
@@ -426,13 +433,33 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
         for beat in beats:
             if clips.get(beat["id"]):
                 groups.setdefault(beat.get("para"), []).append(beat["id"])
+        # Measure the whole take, not its first slice: a paragraph's opening
+        # beat can be three words long, and f0 off three words is noise. The
+        # normaliser works on full takes, so the audit has to agree with it.
+        import tempfile
+
         f0s = []
         for ids in list(groups.values())[:60]:
-            path = OUT / "audio" / clips[ids[0]]["file"]
-            if path.exists():
-                f = _median_f0(path)
-                if f:
-                    f0s.append(f)
+            frames = b""
+            params = None
+            for cid in ids:
+                path = OUT / "audio" / clips[cid]["file"]
+                if not path.exists():
+                    continue
+                with wave.open(str(path), "rb") as fh:
+                    params = params or fh.getparams()
+                    frames += fh.readframes(fh.getnframes())
+            if not params or not frames:
+                continue
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                joined = Path(tmp.name)
+            with wave.open(str(joined), "wb") as fh:
+                fh.setparams(params)
+                fh.writeframes(frames)
+            f = _median_f0(joined)
+            joined.unlink(missing_ok=True)
+            if f:
+                f0s.append(f)
         if len(f0s) >= 4:
             f0s.sort()
             mid = f0s[len(f0s) // 2]

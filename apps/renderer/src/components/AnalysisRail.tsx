@@ -134,8 +134,16 @@ export const PlayerCard: React.FC<{
         textAlign: 'center',
         color: active ? THEME.text : THEME.muted,
         // Long names wrap rather than being cut: "Robert James Fischer" has to
-        // fit a half-width card without an ellipsis eating the surname.
+        // fit a half-width card without an ellipsis eating the surname. The
+        // block is two lines tall whether or not it needs them, so a wrapping
+        // name cannot steal height from its portrait and leave the two cards
+        // holding different-sized faces.
         overflowWrap: 'anywhere',
+        height: 27 * 1.18 * 2,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
       }}
     >
       {name}

@@ -1345,6 +1345,12 @@ in bare "Piece to square, comment" announcement form.
   Flat (avoid): "Bishop to b2, eyeing the e5 pawn. f5 is ambitious."
   Yours: "White wants that long diagonal working, so the bishop slides to b2, staring at
   e5 — and Spassky answers with the ambitious f5, grabbing space and loosening his own king."
+NEVER OPEN A SENTENCE WITH A BARE SQUARE. "e6 just builds instead" gets read aloud as
+"six just builds instead" — a leading letter-then-digit looks like scientific notation
+to the synthesiser and the letter is swallowed. Give it a word or two of run-up:
+"Black answers e6", "The pawn steps to e6", "Instead comes e6". Anywhere other than the
+first word of a sentence, a bare square is fine.
+
 Every beat that plays a move must still SAY its move once, with the square written as a
 letter-number token ("knight to f3", "queen takes e5", "castles kingside") at the moment
 the piece should be seen to move — early in the beat if the move is the point, later if
@@ -1690,6 +1696,9 @@ def build_script(
     if use_llm:
         if narrate_with_llm(script, facts):
             script["meta"]["narration"] = "llm"
+            repaired = _fix_leading_squares(script["beats"])
+            if repaired:
+                logger.info(f"Repaired {repaired} beat(s) opening on a bare square")
             _reflow_paragraphs(script["beats"])
             logger.info("Narration: LLM")
         else:
@@ -1701,6 +1710,34 @@ def build_script(
 
 
 _SENTENCE_END = tuple('.!?"”’)')
+
+# A sentence that begins "e6 ..." is read aloud as "six ..." — a leading letter
+# followed by a digit looks like scientific notation to the synthesiser, and the
+# letter is swallowed. The brief forbids it; this repairs the ones that slip
+# through, because a lost square makes the commentary wrong, not just clumsy.
+_LEADING_SQUARE = re.compile(r"^(\s*)([a-h][1-8])(?![a-z0-9])")
+
+
+def _fix_leading_squares(beats: List[Dict[str, Any]]) -> int:
+    """Give any sentence that opens on a bare square a word of run-up."""
+    fixed = 0
+    for beat in beats:
+        text = beat.get("text") or ""
+        parts = re.split(r"(?<=[.!?])\s+", text)
+        changed = False
+        for i, part in enumerate(parts):
+            m = _LEADING_SQUARE.match(part)
+            if not m:
+                continue
+            # "And" is the one lead that stays grammatical whatever follows
+            # the square: a noun phrase like "the pawn goes to" would collide
+            # with the sentence's own verb ("...to e6 just builds instead").
+            parts[i] = m.group(1) + "And " + part[m.end(1):]
+            changed = True
+        if changed:
+            beat["text"] = " ".join(parts)
+            fixed += 1
+    return fixed
 
 
 def _reflow_paragraphs(beats: List[Dict[str, Any]]) -> None:

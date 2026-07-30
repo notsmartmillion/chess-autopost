@@ -44,6 +44,11 @@ API_ROOT = "https://api.elevenlabs.io/v1"
 
 _WORD_STRIP = re.compile(r"^[^\w#+=-]+|[^\w#+=-]+$")
 
+# How many words one synthesis request may cover. Deliberately far above the
+# director's writing budget: breath groups are about how the script is written,
+# takes are about how few times the voice restarts.
+SYNTH_WORD_BUDGET = 170
+
 
 # --------------------------------------------------------------------------
 # helpers
@@ -585,6 +590,61 @@ def _pitch_shift(path: Path, factor: float) -> bool:
     return False
 
 
+def _tail_sentence(text: str, max_words: int = 22) -> str:
+    """The last complete sentence of a take, used to prime the next one."""
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text.strip()) if p.strip()]
+    if not parts:
+        return ""
+    tail = parts[-1]
+    words = tail.split()
+    return " ".join(words[-max_words:]) if len(words) > max_words else tail
+
+
+def _primer_end(path: Path, primer: str, full: str) -> float:
+    """Where the primer stops and the real text begins, in seconds.
+
+    Uses the same forced alignment the move cues rely on, so the cut lands in
+    the pause between the two rather than inside a word. Returns 0.0 when the
+    alignment cannot place it, which makes the caller fall back to a plain
+    cold-start take — a slightly harsher seam beats a clipped first word.
+    """
+    import wave as _wave
+
+    try:
+        with _wave.open(str(path), "rb") as fh:
+            duration_ms = int(fh.getnframes() / float(fh.getframerate()) * 1000)
+        words = _align_words(path, full, duration_ms, {})
+        n_primer = len([w for w in primer.split() if _norm_word(w)])
+        if len(words) <= n_primer + 1:
+            return 0.0
+        prev_end = float(words[n_primer - 1]["e"])
+        next_start = float(words[n_primer]["s"])
+        if next_start <= prev_end:
+            return 0.0
+        return (prev_end + next_start) / 2.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _drop_head(path: Path, seconds: float) -> None:
+    """Remove the first ``seconds`` of a clip, in place."""
+    import wave as _wave
+
+    with _wave.open(str(path), "rb") as fh:
+        params = fh.getparams()
+        sr = fh.getframerate()
+        data = fh.readframes(fh.getnframes())
+    width = params.sampwidth * params.nchannels
+    offset = int(round(seconds * sr)) * width
+    if offset <= 0 or offset >= len(data):
+        return
+    with _wave.open(str(path), "wb") as fh:
+        fh.setparams(params)
+        fh.writeframes(data[offset:])
+
+
+
+
 def _normalize_pitch(
     paths: Sequence[Path], tolerance: float = 0.025, max_shift: float = 0.10
 ) -> None:
@@ -791,6 +851,32 @@ def _ttsapi_synthesize(
         else:
             groups.append([item])
 
+    # Every take opens ~26 Hz above its own median and closes ~25 Hz below it,
+    # so each seam is a ~50 Hz step and the voice reads as two alternating
+    # narrators. The cheapest half of the cure is simply to have fewer seams:
+    # merge neighbouring runs up to a synthesis budget well above the writing
+    # budget. Variations keep their own take — that separation is deliberate,
+    # and the point is to soften the step, not to remove the boundary.
+    def _branchy(g: List[Dict[str, Any]]) -> bool:
+        return any(i.get("branch") for i in g)
+
+    merged: List[List[Dict[str, Any]]] = []
+    for g in groups:
+        prev = merged[-1] if merged else None
+        joinable = (
+            prev is not None
+            and not _branchy(prev)
+            and not _branchy(g)
+            and sum(len(i["text"].split()) for i in prev + g) <= SYNTH_WORD_BUDGET
+        )
+        if joinable:
+            merged[-1] = prev + g
+        else:
+            merged.append(g)
+    if len(merged) != len(groups):
+        print(f"[tts] merged {len(groups)} breath groups into {len(merged)} takes")
+    groups = merged
+
     def fetch(text: str, label: str) -> bytes:
         body = json.dumps({"text": text, "voice": voice, "format": "wav"}).encode()
         for attempt in range(1, attempts + 1):
@@ -826,15 +912,35 @@ def _ttsapi_synthesize(
     # can be corrected until all the takes exist, because the target is their
     # own median: that keeps the voice self-consistent without a tuned constant.
     takes: List[Tuple[List[Dict[str, Any]], Path, str]] = []
+    primed = 0
     for gi, group in enumerate(groups, start=1):
         text = " ".join(item["text"] for item in group)
-        audio = fetch(text, f"para {gi}/{total}")
         para_path = out_dir / f"{group[0]['id']}.wav"
-        para_path.write_bytes(audio)
-        trimmed_ms += _trim_lead_silence(para_path)
+
+        # Cold-starting a take is what makes it open high and loud. Giving the
+        # model the sentence that precedes it means this text is continuing an
+        # utterance rather than beginning one; the primer's audio is then cut
+        # away using its own word timings. Measured on one seam: the opening
+        # overshoot falls from +22 Hz to +13 Hz.
+        primer = _tail_sentence(takes[-1][2]) if takes else ""
+        cut_s = 0.0
+        if primer:
+            full = primer + " " + text
+            para_path.write_bytes(fetch(full, f"take {gi}/{total}"))
+            _trim_lead_silence(para_path)
+            cut_s = _primer_end(para_path, primer, full)
+        if not primer or cut_s <= 0:
+            para_path.write_bytes(fetch(text, f"take {gi}/{total}"))
+            trimmed_ms += _trim_lead_silence(para_path)
+        else:
+            _drop_head(para_path, cut_s)
+            primed += 1
+
         takes.append((group, para_path, text))
         if gi % 5 == 0 or gi == total:
-            print(f"[tts] ttsapi para {gi}/{total} ({voice})")
+            print(f"[tts] ttsapi take {gi}/{total} ({voice})")
+    if primed:
+        print(f"[tts] {primed}/{total} takes primed with the preceding sentence")
 
     # --- phase 2: re-roll the takes no shift could rescue ----------------
     # A take far enough from the median needs a correction big enough to
@@ -867,7 +973,12 @@ def _ttsapi_synthesize(
             # Cosmetic pass: never let it cost the run.
             print(f"[tts] outlier re-roll skipped ({exc})")
 
-    # --- phase 3: even out the remaining pitch --------------------------
+    # --- phase 3: even out the remaining pitch and level ----------------
+    # Pitch normalisation only. Two level treatments were tried here and both
+    # were dropped: matching whole-take loudness widened the step at the seam
+    # rather than closing it (x1.59 -> x1.78), and tapering each take's onset
+    # did no better (x2.56). Neither earned its place, and unproven processing
+    # on the voice is worse than a measured imperfection.
     _normalize_pitch([p for _, p, _ in takes])
 
     # --- phase 4: align and slice ---------------------------------------

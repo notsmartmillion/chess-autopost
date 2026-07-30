@@ -118,14 +118,22 @@ def _short_name(full: Optional[str]) -> str:
 
 
 def _display_name(full: Optional[str]) -> str:
-    """"Tal, Mihail" -> "Mihail Tal"."""
+    """"Tal, Mihail" -> "Mihail Tal";  "Bronstein, David I" -> "David Bronstein".
+
+    Bare initials are dropped. Spoken aloud "David I Bronstein" makes the
+    narrator recite a letter, and on screen a lone capital I is a bare vertical
+    stroke that reads as a pipe character.
+    """
     name = _clean(full)
     if not name:
         return "Unknown"
-    if "," in name:
-        last, _, first = name.partition(",")
-        return f"{first.strip()} {last.strip()}".strip()
-    return name
+    last, _, first = name.partition(",") if "," in name else (name, "", "")
+    given = " ".join(
+        part for part in first.split()
+        if part and not re.fullmatch(r"[A-Za-z]\.?", part)
+    )
+    surname = last.strip()
+    return (f"{given} {surname}".strip() if given else surname) or "Unknown"
 
 
 def _year(date_header: Optional[str]) -> Optional[str]:

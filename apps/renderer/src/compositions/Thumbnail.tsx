@@ -12,15 +12,26 @@ export type ThumbnailProps = {
 const BOARD = 820;
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
+/**
+ * "Bronstein, David I" -> "David Bronstein".
+ *
+ * PGN headers carry middle initials and Russian patronymics, often truncated
+ * ("Chistiakov, Alexander Nikolaevi"). A lone capital I renders as a bare
+ * vertical stroke and gets read as a pipe character, and broadcasts say
+ * "David Bronstein" anyway — so bare initials are dropped.
+ */
 const displayName = (raw?: string | null): string => {
   if (!raw) return 'Unknown';
   const v = raw.trim();
   if (!v || /^[?.]+$/.test(v)) return 'Unknown';
-  if (v.includes(',')) {
-    const [last, first] = v.split(',');
-    return `${first.trim()} ${last.trim()}`.trim();
-  }
-  return v;
+  const [last, first] = v.includes(',') ? v.split(',') : [v, ''];
+  const given = (first ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter((part) => part && !/^[A-Za-z]\.?$/.test(part))
+    .join(' ');
+  const surname = (last ?? '').trim();
+  return (given ? `${given} ${surname}` : surname).trim() || 'Unknown';
 };
 
 const year = (raw?: string | null): string | null => {

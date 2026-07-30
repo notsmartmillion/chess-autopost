@@ -390,6 +390,25 @@ def main() -> int:
         f"({variations} variation beats, narration={script['meta'].get('narration')})"
     )
 
+    # Cache portraits for the two players before looking for them on disk.
+    # Best effort by design: a missing face renders the silhouette, and no
+    # network hiccup is allowed to cost a day's video.
+    try:
+        import portraits_fetch
+
+        portraits_fetch.ensure(script["meta"].get("white"), script["meta"].get("black"))
+        credits = portraits_fetch.credits_for(
+            script["meta"].get("white") or "", script["meta"].get("black") or ""
+        )
+        if credits:
+            script["meta"]["portraitCredits"] = [
+                {"player": c.get("player"), "licence": c.get("licence"),
+                 "author": c.get("author"), "url": c.get("descriptionUrl")}
+                for c in credits
+            ]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[portraits] skipped ({exc})")
+
     # Portraits are optional; wire them up when a matching file exists.
     for side, key in (("white", "whitePortrait"), ("black", "blackPortrait")):
         name = (script["meta"].get(side) or "").split(",")[0].strip().lower()

@@ -8,6 +8,14 @@
 
 import type { Script } from '../renderer/src/types/script';
 
+/** Attribution for a Commons portrait whose licence requires credit. */
+export interface PortraitCredit {
+  player?: string;
+  licence?: string;
+  author?: string;
+  url?: string;
+}
+
 export interface VideoMetadata {
   title: string;
   description: string;
@@ -24,12 +32,22 @@ function clean(value: string | null | undefined): string | undefined {
 }
 
 /** PGN stores names surname-first ("Tal, Mihail"); people read "Mihail Tal". */
+/**
+ * "Bronstein, David I" -> "David Bronstein". Bare initials are dropped, as
+ * they are on screen and in the narration: nobody searches YouTube for
+ * "David I Bronstein", so a tag carrying the initial matches nothing.
+ */
 function displayName(value: string | null | undefined): string | undefined {
   const v = clean(value);
   if (!v) return undefined;
-  if (!v.includes(',')) return v;
-  const [last, first] = v.split(',');
-  return `${first.trim()} ${last.trim()}`.trim();
+  const [last, first] = v.includes(',') ? v.split(',') : [v, ''];
+  const given = (first ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter((part) => part && !/^[A-Za-z]\.?$/.test(part))
+    .join(' ');
+  const surname = (last ?? '').trim();
+  return (given ? `${given} ${surname}` : surname).trim() || undefined;
 }
 
 function parseYear(date: string | null | undefined): string {
@@ -121,7 +139,23 @@ export function generateDescription(script: Script, moreVideos: string[] = []): 
   }
 
   // 6. Housekeeping. The disclosure must stay if any link above is an affiliate
-  // link — that is an FTC requirement, not a stylistic choice.
+  // link — that is an FTC requirement, not a stylistic choice. Photo credits
+  // are the same kind of obligation: the portraits come from Wikimedia
+  // Commons, and a CC BY-SA licence is only honoured if the credit travels
+  // with the image.
+  const credits = (script.meta as {portraitCredits?: PortraitCredit[]}).portraitCredits;
+  if (credits?.length) {
+    blocks.push(
+      [
+        'Player photographs:',
+        ...credits.map((c) =>
+          `• ${c.player} — ${c.author || 'unknown author'}, ${c.licence || 'see source'}` +
+          `${c.url ? ` (${c.url})` : ''}`
+        ),
+        'via Wikimedia Commons.',
+      ].join('\n')
+    );
+  }
   if (l.affiliateDisclosure) blocks.push(l.affiliateDisclosure);
   if (l.contact) blocks.push(`Contact: ${l.contact}`);
   blocks.push(hashtags(script).join(' '));

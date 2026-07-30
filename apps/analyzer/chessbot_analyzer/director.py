@@ -69,6 +69,12 @@ COLOR_GOOD = "#3ddc97"
 # the same arrow when it was not created by the move just played.
 ARROW_COOLDOWN_PLIES = 14
 
+# Good narration often describes a capture without naming the square — "Black
+# recaptures with the c-pawn", "he grabs the queen". The verb is then the moment
+# the move happens, and a far better animation cue than a blind fraction of the
+# beat. Tried only after the destination square, which is always preferred.
+CAPTURE_CUES = ("takes", "recaptures", "captures", "grabs", "takes.")
+
 # Roughly how many spoken words each kind of beat should get. The board waits
 # for the narrator — a beat's on-screen duration is however long its line takes
 # to speak — so this table *is* the pacing of the video. "hold" beats are the
@@ -463,7 +469,11 @@ class Director:
         return WORD_BUDGET["move_quiet"]
 
     def _cue_words(self, ply: Dict[str, Any]) -> List[str]:
-        """Words whose utterance should trigger the piece animation."""
+        """Words whose utterance should trigger the piece animation.
+
+        Order matters: the resolver takes the first of these it can find, so
+        the most specific cue comes first.
+        """
         words = []
         to_sq = ply.get("to")
         if to_sq:
@@ -473,6 +483,8 @@ class Director:
             words.append(PIECE_NAMES.get(piece, piece))
         if ply.get("isCastle"):
             words.append("castles")
+        if ply.get("isCapture"):
+            words.extend(CAPTURE_CUES)
         return words
 
     # ---------------------------- variations --------------------------
@@ -551,7 +563,9 @@ class Director:
                     checkSquare=self._check_square(board),
                     evalCp=self._alt_eval_cp(alt, ply),
                     ply=ply.get("ply"),
-                    moveCueWords=[to],
+                    # A variation line is spoken the same way, so it needs
+                    # the same verb fallback when the square is not named.
+                    moveCueWords=([to] + list(CAPTURE_CUES) if "x" in san else [to]),
                 )
             )
 
@@ -677,7 +691,9 @@ class Director:
                     checkSquare=self._check_square(board),
                     evalCp=self._pv_eval_cp(ply),
                     ply=ply.get("ply"),
-                    moveCueWords=[to],
+                    # A variation line is spoken the same way, so it needs
+                    # the same verb fallback when the square is not named.
+                    moveCueWords=([to] + list(CAPTURE_CUES) if "x" in san else [to]),
                     targetWords=WORD_BUDGET["variation_first" if idx == 0 else "variation_cont"],
                 )
             )
@@ -724,11 +740,20 @@ class Director:
         """
         fen = ply.get("fenBefore") if before else ply.get("fenAfter")
         features = ply.get("features") or {}
-        highlights, arrows = self._board_directives(ply)
-        # Drop the from/to move squares — nothing has moved yet on a setup hold.
         if before:
-            move_squares = {ply.get("from"), ply.get("to")}
-            highlights = [h for h in highlights if h.get("square") not in move_squares]
+            # A setup hold shows the board as it stands BEFORE the move, but the
+            # fact sheet's features describe the position after it. Drawing them
+            # here puts the future board's geometry on the present one: rays
+            # whose slider has not arrived yet (so the arrow starts from an empty
+            # square), blockers in the wrong places, pieces marked as hanging
+            # that are not hanging until the move is played. Nothing derived
+            # from those features is safe on this position, so the hold points
+            # at nothing and lets the narration — and the verified spoken-mention
+            # highlights, which are checked against the board actually shown —
+            # carry it.
+            highlights, arrows = [], []
+        else:
+            highlights, arrows = self._board_directives(ply)
 
         opener = (
             self._pick("hold_before", [
@@ -1318,9 +1343,20 @@ the piece should be seen to move — early in the beat if the move is the point,
 you are building up to it.
 
 RHYTHM DEVICES — use all of these across the video:
-- Question then answer. Before anything surprising, voice the viewer's question and answer
-  it: "Can't the knight just take? It cannot — and here is why." Ask a real question every
-  few paragraphs; end a beat on the question so the next beat answers it.
+- Question then answer. THIS IS NOT OPTIONAL AND IT IS THE MOST OFTEN IGNORED RULE HERE.
+  A question makes the listener lean in and, spoken aloud, lifts the voice instead of
+  letting it fall — which is what stops fifteen minutes sounding like a list.
+  Requirements, all of them:
+    * EVERY 'hold' beat must contain at least one question. A hold exists to make the
+      viewer think, so ask them what they would play, or what they think White is
+      worried about, before you answer it.
+    * EVERY beat tagged blunder or brilliant must be set up by a question, either in
+      that beat or the one before it: "Can he really take? / What is wrong with the
+      obvious recapture?"
+    * At least SIX questions across the whole script.
+  Ask them the way a person does — "So what is actually holding this together?",
+  "Can't the knight just take it?", "Why not simply defend?" — and answer immediately
+  after. Rhetorical filler with no answer is worse than no question at all.
 - Running threads. Pick one to three motifs the facts support (a pin that never resolves, a
   piece nobody can take, a king stuck in the middle) and count them out loud: "that is the
   second piece White is not allowed to capture." Set them up early, pay them off at the end.

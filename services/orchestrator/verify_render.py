@@ -221,7 +221,7 @@ def check_script_structure(script: Dict[str, Any], pgn_path: Optional[Path], rep
 
 def check_board_directives(script: Dict[str, Any], rep: Report) -> None:
     beats = script.get("beats") or []
-    edge_arrows, stale_arrows, off_board = 0, 0, 0
+    edge_arrows, stale_arrows, off_board, no_slider = 0, 0, 0, []
     for beat in beats:
         board = chess.Board(beat["fen"]) if _legal_fen(beat.get("fen")) else None
         move = beat.get("move") or {}
@@ -231,6 +231,11 @@ def check_board_directives(script: Dict[str, Any], rep: Report) -> None:
             if not (a and b):
                 off_board += 1
                 continue
+            # An arrow says "this piece attacks that one". If its origin is
+            # empty, the geometry was computed against a different position
+            # than the one on screen.
+            if board and board.piece_at(chess.parse_square(a)) is None:
+                no_slider.append(f"{beat['id']}:{a}->{b}")
             # A pin arrow runs attacker -> king *through* the pinned piece; that
             # is what a pin is, so one occupied square in between is expected.
             is_pin = (arrow.get("color") or "").lower() == "#b28cff"
@@ -261,6 +266,9 @@ def check_board_directives(script: Dict[str, Any], rep: Report) -> None:
         rep.error("arrows", f"{stale_arrows} arrow(s) unrelated to the move on screen")
     if off_board:
         rep.error("arrows", f"{off_board} directive(s) with an invalid square")
+    if no_slider:
+        rep.error("arrows", f"{len(no_slider)} arrow(s) start from an empty square: "
+                            f"{no_slider[:4]}")
     total = sum(len(b.get("arrows") or []) for b in beats)
     if not (edge_arrows or stale_arrows or off_board):
         rep.info("arrows", f"{total} arrows, all terminating on their target")
@@ -293,7 +301,17 @@ def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) 
     words = [len(b["text"].split()) for b in beats]
     rep.info("narration", f"{sum(words)} words; per beat min={min(words)} "
                           f"max={max(words)} mean={sum(words)/len(words):.0f}")
-    rep.info("narration", f"{sum(1 for b in beats if '?' in b['text'])} beats ask a question")
+    # A script with no questions reads as a list, and the voice never lifts.
+    questions = [b["id"] for b in beats if "?" in b["text"]]
+    rep.info("narration", f"{len(questions)} beats ask a question")
+    if len(questions) < 6:
+        rep.error("narration", f"only {len(questions)} question(s) in the script; "
+                               "the brief requires at least 6")
+    holds = [b for b in beats if b["kind"] == "hold"]
+    mute_holds = [b["id"] for b in holds if "?" not in b["text"]]
+    if mute_holds:
+        rep.warn("narration", f"{len(mute_holds)}/{len(holds)} hold beats ask nothing: "
+                              f"{mute_holds[:4]}")
 
     # Repetition is the loudest tell that a script was generated.
     openings = collections.Counter(" ".join(b["text"].split()[:3]).lower() for b in beats)

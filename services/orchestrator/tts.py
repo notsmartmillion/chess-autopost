@@ -509,8 +509,13 @@ def _ffmpeg() -> Optional[str]:
     return None
 
 
-def _median_f0(path: Path) -> float:
-    """Median voiced pitch of a clip, by autocorrelation. 0.0 if unvoiced."""
+def _median_f0(path: Path, start_s: float = 0.0, dur_s: Optional[float] = None) -> float:
+    """Median voiced pitch of a clip (or a segment of it), by autocorrelation.
+
+    ``start_s`` may be negative to measure from the end — ``-1.0`` reads the
+    final second, which is how seam edges are inspected. Returns 0.0 when the
+    segment holds no voiced frames.
+    """
     import wave as _wave
 
     import numpy as np  # type: ignore
@@ -521,6 +526,10 @@ def _median_f0(path: Path) -> float:
         pcm = np.frombuffer(fh.readframes(fh.getnframes()), dtype=np.int16)
     if ch > 1:
         pcm = pcm.reshape(-1, ch).mean(axis=1)
+    if start_s:
+        pcm = pcm[int(start_s * sr) :]  # negative start reads from the end
+    if dur_s is not None:
+        pcm = pcm[: int(dur_s * sr)]
     win = int(sr * 0.04)
     lo, hi = int(sr / 350), int(sr / 70)
     out = []
@@ -536,6 +545,165 @@ def _median_f0(path: Path) -> float:
         if ac[k] > 0.3 * ac[0]:
             out.append(sr / k)
     return float(np.median(out)) if out else 0.0
+
+
+def _pitch_glide(
+    path: Path, head_factor: float, tail_factor: float, edge_s: float = 1.2
+) -> bool:
+    """Glide the pitch at a take's edges, leaving the middle untouched.
+
+    A constant shift cannot fix a seam — the problem is the *contour*: takes
+    open sharp and close low, so the join is a step however well their averages
+    match. This eases the first ``edge_s`` from ``head_factor`` to unity and
+    the last ``edge_s`` from unity to ``tail_factor``, in ~1% steps every
+    120 ms, which is at the threshold of pitch discrimination in running
+    speech — heard as natural drift, not as processing.
+
+    Duration is sacred (beat lengths, word timings and the frame grid all hang
+    off it), so the output is padded or clipped back to the exact input length.
+    """
+    if abs(head_factor - 1.0) < 0.01 and abs(tail_factor - 1.0) < 0.01:
+        return True
+    ff = _ffmpeg()
+    if not ff:
+        return False
+    import math
+    import subprocess
+    import wave as _wave
+
+    with _wave.open(str(path), "rb") as fh:
+        sr = fh.getframerate()
+        before = fh.getnframes()
+    total_s = before / sr
+    edge_s = min(edge_s, total_s / 3)
+    if edge_s < 0.3:
+        return False
+
+    # Hold the full correction across the join itself, then ease it away. An
+    # immediate taper is what made the first attempt too weak: by the time the
+    # listener's ear settles on the new take, most of the correction had
+    # already been given back.
+    plateau = min(0.5, edge_s / 3)
+    ramp = edge_s - plateau
+    steps = 8
+    lines = [f"0.000 rubberband pitch {head_factor:.5f};"]
+    for i in range(steps + 1):
+        t = plateau + ramp * i / steps
+        w = (1 + math.cos(math.pi * i / steps)) / 2
+        f = 1.0 + (head_factor - 1.0) * w
+        lines.append(f"{t:.3f} rubberband pitch {f:.5f};")
+    for i in range(steps + 1):
+        t = (total_s - edge_s) + ramp * i / steps
+        w = (1 - math.cos(math.pi * i / steps)) / 2
+        f = 1.0 + (tail_factor - 1.0) * w
+        lines.append(f"{max(0.0, t):.3f} rubberband pitch {f:.5f};")
+    lines.append(f"{max(0.0, total_s - 0.05):.3f} rubberband pitch {tail_factor:.5f};")
+
+    cmds = path.with_suffix(".cmds")
+    cmds.write_text("\n".join(lines) + "\n", encoding="ascii")
+    tmp = path.with_suffix(".glide.wav")
+    try:
+        # cwd trick: sendcmd's f= argument chokes on Windows drive colons.
+        subprocess.run(
+            [ff, "-y", "-hide_banner", "-loglevel", "error",
+             "-i", path.name,
+             "-af", f"asendcmd=f={cmds.name},rubberband=pitch={head_factor:.5f}",
+             tmp.name],
+            cwd=str(path.parent), capture_output=True, check=True,
+        )
+        with _wave.open(str(tmp), "rb") as fh:
+            params = fh.getparams()
+            data = fh.readframes(fh.getnframes())
+        width = params.sampwidth * params.nchannels
+        want = before * width
+        data = data[:want] + b"\x00" * max(0, want - len(data))
+        with _wave.open(str(path), "wb") as fh:
+            fh.setparams(params)
+            fh.setnframes(before)
+            fh.writeframes(data)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+    finally:
+        tmp.unlink(missing_ok=True)
+        cmds.unlink(missing_ok=True)
+
+
+def _flatten_seams(
+    paths: Sequence[Path], target_step_hz: float = 12.0, edge_s: float = 1.2
+) -> None:
+    """Make consecutive takes meet like sentences, not like separate speakers.
+
+    Each take opens ~26 Hz above its own median and closes ~25 Hz below, so a
+    seam is a ~50 Hz step from a falling cadence into a fresh attack — heard as
+    the narrator being swapped. A natural speaker resets pitch at a sentence
+    boundary too, just far less, so the goal is not zero: each seam is eased
+    until its step matches ``target_step_hz``, splitting the correction between
+    the tail below and the head above it.
+
+    The first take's opening and the last take's closing cadence are left
+    alone — a video should start fresh and end final.
+    """
+    if os.getenv("TTS_SEAM_FLATTEN", "1").strip().lower() in ("0", "false", "no"):
+        return
+    if len(paths) < 2 or not _ffmpeg():
+        return
+
+    # The join is judged over its last/first beat of speech, so measure tight:
+    # a wide window dilutes the very step being corrected.
+    meas = 0.6
+
+    def steps_now() -> List[Optional[float]]:
+        heads = [_median_f0(p, 0.0, meas) for p in paths]
+        tails = [_median_f0(p, -meas) for p in paths]
+        return [
+            (heads[i] - tails[i - 1]) if heads[i] and tails[i - 1] else None
+            for i in range(1, len(paths))
+        ]
+
+    import statistics
+
+    before = steps_now()
+    seams = [s for s in before if s is not None]
+    if not seams:
+        return
+
+    # Correcting through a pitch shifter is not exact, so converge in bounded
+    # passes: apply, re-measure, correct the remainder.
+    fixed = 0
+    for _ in range(2):
+        current = steps_now()
+        heads = [_median_f0(p, 0.0, meas) for p in paths]
+        tails = [_median_f0(p, -meas) for p in paths]
+        head_fac = [1.0] * len(paths)
+        tail_fac = [1.0] * len(paths)
+        any_work = False
+        for i in range(1, len(paths)):
+            step = current[i - 1]
+            if step is None:
+                continue
+            excess = step - target_step_hz
+            if excess <= 4:
+                continue
+            tail_fac[i - 1] = min((tails[i - 1] + excess / 2) / tails[i - 1], 1.10)
+            head_fac[i] = max((heads[i] - excess / 2) / heads[i], 0.90)
+            any_work = True
+        if not any_work:
+            break
+        # First take opens the video and last take closes it: leave the
+        # opening attack and the final cadence as spoken.
+        head_fac[0] = 1.0
+        tail_fac[-1] = 1.0
+        for i, p in enumerate(paths):
+            if head_fac[i] != 1.0 or tail_fac[i] != 1.0:
+                _pitch_glide(p, head_fac[i], tail_fac[i], edge_s)
+        fixed += 1
+
+    after = [s for s in steps_now() if s is not None]
+    if fixed and after:
+        print(f"[tts] seams eased in {fixed} pass(es): median step "
+              f"{statistics.median(seams):+.0f} -> {statistics.median(after):+.0f} Hz "
+              f"(worst {max(seams, key=abs):+.0f} -> {max(after, key=abs):+.0f})")
 
 
 def _pitch_shift(path: Path, factor: float) -> bool:
@@ -974,12 +1142,13 @@ def _ttsapi_synthesize(
             print(f"[tts] outlier re-roll skipped ({exc})")
 
     # --- phase 3: even out the remaining pitch and level ----------------
-    # Pitch normalisation only. Two level treatments were tried here and both
-    # were dropped: matching whole-take loudness widened the step at the seam
-    # rather than closing it (x1.59 -> x1.78), and tapering each take's onset
-    # did no better (x2.56). Neither earned its place, and unproven processing
-    # on the voice is worse than a measured imperfection.
+    # Pitch normalisation, then seam easing. Two *level* treatments were tried
+    # here and dropped: matching whole-take loudness widened the step at the
+    # seam rather than closing it (x1.59 -> x1.78), and tapering each take's
+    # onset did no better (x2.56). Pitch is where the "two announcers" effect
+    # actually lives, so pitch is what gets corrected.
     _normalize_pitch([p for _, p, _ in takes])
+    _flatten_seams([p for _, p, _ in takes])
 
     # --- phase 4: align and slice ---------------------------------------
     import wave

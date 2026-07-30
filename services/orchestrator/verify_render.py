@@ -433,43 +433,61 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
         for beat in beats:
             if clips.get(beat["id"]):
                 groups.setdefault(beat.get("para"), []).append(beat["id"])
-        # Measure the whole take, not its first slice: a paragraph's opening
-        # beat can be three words long, and f0 off three words is noise. The
-        # normaliser works on full takes, so the audit has to agree with it.
+        # Reconstruct TAKES, not paragraphs: merging means several breath
+        # groups share one synthesis request, and a take ends where a clip is
+        # not chained. Both failure modes live here — take-to-take drift
+        # (medians apart) and the seam step (a falling cadence into a fresh
+        # attack), which is the one heard as the announcer being swapped.
         import tempfile
 
-        f0s = []
-        for ids in list(groups.values())[:60]:
-            frames = b""
-            params = None
-            for cid in ids:
-                path = OUT / "audio" / clips[cid]["file"]
-                if not path.exists():
-                    continue
-                with wave.open(str(path), "rb") as fh:
-                    params = params or fh.getparams()
-                    frames += fh.readframes(fh.getnframes())
-            if not params or not frames:
+        take_files: List[Path] = []
+        frames = b""
+        params = None
+        for beat in beats:
+            clip = clips.get(beat["id"])
+            if not clip:
                 continue
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                joined = Path(tmp.name)
-            with wave.open(str(joined), "wb") as fh:
-                fh.setparams(params)
-                fh.writeframes(frames)
-            f = _median_f0(joined)
-            joined.unlink(missing_ok=True)
-            if f:
-                f0s.append(f)
-        if len(f0s) >= 4:
-            f0s.sort()
-            mid = f0s[len(f0s) // 2]
-            spread = f0s[-1] - f0s[0]
-            iqr = f0s[int(len(f0s) * 0.75)] - f0s[int(len(f0s) * 0.25)]
-            rep.info("voice", f"pitch median {mid:.0f} Hz, spread {f0s[0]:.0f}-{f0s[-1]:.0f} Hz "
-                              f"(IQR {iqr:.1f})")
-            if iqr > 8:
-                rep.warn("voice", f"pitch IQR {iqr:.1f} Hz — the narrator's tone "
-                                  "shifts audibly between takes")
+            path = OUT / "audio" / clip["file"]
+            if not path.exists():
+                continue
+            with wave.open(str(path), "rb") as fh:
+                params = params or fh.getparams()
+                frames += fh.readframes(fh.getnframes())
+            if not clip.get("chain") and frames and params:
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    joined = Path(tmp.name)
+                with wave.open(str(joined), "wb") as fh:
+                    fh.setparams(params)
+                    fh.writeframes(frames)
+                take_files.append(joined)
+                frames = b""
+        try:
+            f0s = [f for f in (_median_f0(p) for p in take_files) if f]
+            if len(f0s) >= 4:
+                srt = sorted(f0s)
+                mid = srt[len(srt) // 2]
+                iqr = srt[int(len(srt) * 0.75)] - srt[int(len(srt) * 0.25)]
+                rep.info("voice", f"pitch median {mid:.0f} Hz across {len(f0s)} takes "
+                                  f"(IQR {iqr:.1f})")
+                if iqr > 8:
+                    rep.warn("voice", f"pitch IQR {iqr:.1f} Hz — take medians drift audibly")
+            steps = []
+            for a, b in zip(take_files, take_files[1:]):
+                tail = _median_f0(a, -0.6)
+                head = _median_f0(b, 0.0, 0.6)
+                if tail and head:
+                    steps.append(head - tail)
+            if steps:
+                steps_abs = sorted(steps, key=abs, reverse=True)
+                med = sorted(steps)[len(steps) // 2]
+                rep.info("voice", f"seam pitch step median {med:+.0f} Hz, "
+                                  f"worst {steps_abs[0]:+.0f} across {len(steps)} seams")
+                if abs(med) > 25 or abs(steps_abs[0]) > 45:
+                    rep.error("voice", "seam steps this large are heard as a second "
+                                       "announcer taking over")
+        finally:
+            for p in take_files:
+                p.unlink(missing_ok=True)
     except Exception:  # noqa: BLE001
         pass
 

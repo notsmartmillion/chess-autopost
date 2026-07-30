@@ -1376,6 +1376,13 @@ RHYTHM DEVICES — use all of these across the video:
   do not deserve it.
 - Echo for emphasis, sparingly: "He gave up every pawn. All eight."
 
+DELIVERY. The channel's voice is a calm, late-night register: the narrator never
+rushes, even when the game does. The synthesiser paces itself from punctuation, so
+write for that voice — when several quick moves chain, separate them with full stops
+or em dashes rather than long comma runs: "Rook to b1 claims the file. Rook to d8
+holds d6. And a6 nudges the pawn forward." A sentence that cannot be read calmly in
+one breath is two sentences. Urgency comes from what you say, not how fast it reads.
+
 PACING. Every beat carries a "words" budget — roughly how many words that beat should be.
 Honour it; the board waits for you, so narration length IS screen time.
 - words <= 10  -> a clause or a very short sentence, often chaining with its neighbours.

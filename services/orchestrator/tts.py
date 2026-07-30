@@ -49,6 +49,19 @@ _WORD_STRIP = re.compile(r"^[^\w#+=-]+|[^\w#+=-]+$")
 # takes are about how few times the voice restarts.
 SYNTH_WORD_BUDGET = 170
 
+# Spoken in front of the video's first take and cut away, exactly like the
+# primers between takes: the model warms into its register before the words
+# that will actually be kept. The content is irrelevant; the pace is not.
+WARMUP_PRIMER = "Settle in, and let us take our time with this one."
+
+# The channel's register is calm and deliberate, so takes that sprint past the
+# video's own median pace get a bounded slow-down back toward it. Relative, not
+# absolute: raw words-per-voiced-second depends on the voice and the measure,
+# and an absolute number ended up governing the slow takes too. More than ~8%
+# of stretch starts to smear articulation, so past the cap a take stays brisk.
+FAST_OVER_MEDIAN = 1.06
+MAX_TEMPO_STRETCH = 0.08
+
 
 # --------------------------------------------------------------------------
 # helpers
@@ -806,6 +819,101 @@ def _drop_head(path: Path, seconds: float) -> None:
 
 
 
+def _centroid(path: Path) -> float:
+    """Median spectral centroid over voiced frames — a timbre proxy in Hz."""
+    import wave as _wave
+
+    import numpy as np  # type: ignore
+
+    with _wave.open(str(path), "rb") as fh:
+        sr = fh.getframerate()
+        ch = fh.getnchannels()
+        pcm = np.frombuffer(fh.readframes(fh.getnframes()), dtype=np.int16)
+    if ch > 1:
+        pcm = pcm.reshape(-1, ch).mean(axis=1)
+    sig = pcm.astype(np.float64)
+    out = []
+    n = 1024
+    win = np.hanning(n)
+    freqs = np.fft.rfftfreq(n, 1 / sr)
+    for i in range(0, len(sig) - n, n):
+        frame = sig[i : i + n]
+        if np.sqrt((frame ** 2).mean()) < 300:
+            continue
+        spec = np.abs(np.fft.rfft(frame * win))
+        if spec.sum() > 0:
+            out.append(float((spec * freqs).sum() / spec.sum()))
+    return float(np.median(out)) if out else 0.0
+
+
+def _voiced_seconds(path: Path) -> float:
+    """Seconds of actual speech in a clip, by energy gating."""
+    import wave as _wave
+
+    import numpy as np  # type: ignore
+
+    with _wave.open(str(path), "rb") as fh:
+        sr = fh.getframerate()
+        pcm = np.frombuffer(fh.readframes(fh.getnframes()), dtype=np.int16).astype(np.float64)
+    n = int(sr * 0.04)
+    voiced = sum(
+        1 for i in range(0, max(0, len(pcm) - n), n)
+        if np.sqrt((pcm[i : i + n] ** 2).mean()) > 300
+    )
+    return voiced * n / sr
+
+
+def _slow_fast_takes(takes: Sequence[Tuple[Any, Path, str]]) -> None:
+    """Hold the channel's calm register when the text invites a sprint.
+
+    The model paces itself from the writing, and a run of quick moves gets a
+    quick read — measured up to 218 wpm against a video median near 187. The
+    prompt now writes those runs with breathing room, and this is the safety
+    net behind it: takes over MAX_WPM are time-stretched toward TARGET_WPM,
+    capped where stretching starts to smear articulation. Runs before
+    alignment, so every word timing downstream describes the slowed audio.
+    """
+    if os.getenv("TTS_RATE_GOVERNOR", "1").strip().lower() in ("0", "false", "no"):
+        return
+    ff = _ffmpeg()
+    if not ff:
+        return
+    import subprocess
+
+    rates = []
+    for _, path, text in takes:
+        words = len(text.split())
+        speech = _voiced_seconds(path)
+        rates.append(words / speech * 60 if words and speech >= 3 else 0.0)
+    valid = sorted(r for r in rates if r)
+    if len(valid) < 4:
+        return
+    median = valid[len(valid) // 2]
+
+    slowed = 0
+    for (_, path, text), wpm in zip(takes, rates):
+        if not wpm or wpm <= median * FAST_OVER_MEDIAN:
+            continue
+        stretch = min(wpm / median, 1.0 + MAX_TEMPO_STRETCH)
+        tmp = path.with_suffix(".slow.wav")
+        try:
+            subprocess.run(
+                [ff, "-y", "-hide_banner", "-loglevel", "error",
+                 "-i", path.name,
+                 "-af", f"rubberband=tempo={1 / stretch:.5f}",
+                 tmp.name],
+                cwd=str(path.parent), capture_output=True, check=True,
+            )
+            tmp.replace(path)
+            slowed += 1
+            print(f"[tts] slowed {path.stem}: {wpm:.0f} -> ~{wpm / stretch:.0f} wpm")
+        except Exception:  # noqa: BLE001
+            tmp.unlink(missing_ok=True)
+    if slowed:
+        print(f"[tts] rate governor: {slowed}/{len(takes)} takes eased toward "
+              f"the video's own pace ({median:.0f} wpm)")
+
+
 def _normalize_pitch(
     paths: Sequence[Path], tolerance: float = 0.025, max_shift: float = 0.10
 ) -> None:
@@ -1104,7 +1212,10 @@ def _ttsapi_synthesize(
         # utterance rather than beginning one; the primer's audio is then cut
         # away using its own word timings. Measured on one seam: the opening
         # overshoot falls from +22 Hz to +13 Hz.
-        primer = _tail_sentence(takes[-1][2]) if takes else ""
+        # The first take used to be the only one with no primer, and it showed:
+        # it cold-started ~143 Hz darker in timbre than the rest of the video.
+        # A canned warm-up line — cut away like any primer — fixes that.
+        primer = _tail_sentence(takes[-1][2]) if takes else WARMUP_PRIMER
         cut_s = 0.0
         if primer:
             full = primer + " " + text
@@ -1131,16 +1242,21 @@ def _ttsapi_synthesize(
     # kept if it is actually closer. Bounded, because this costs a request each.
     if len(takes) >= 4 and _ffmpeg():
         try:
-            measured = [(p, _median_f0(p)) for _, p, _ in takes]
-            voiced = sorted(f for _, f in measured if f > 0)
+            measured = [(p, _median_f0(p), _centroid(p)) for _, p, _ in takes]
+            voiced = sorted(f for _, f, _ in measured if f > 0)
+            cents = sorted(c for _, _, c in measured if c > 0)
             if len(voiced) >= 4:
                 target = voiced[len(voiced) // 2]
+                ctarget = cents[len(cents) // 2] if cents else 0
+                # Timbre is what reads as "a different person" — pitch register
+                # is allowed to breathe with the pace of the passage.
                 outliers = [
-                    (i, f) for i, (_, f) in enumerate(measured)
-                    if f and abs(target / f - 1.0) > 0.10
+                    (i, f, c) for i, (_, f, c) in enumerate(measured)
+                    if (f and abs(target / f - 1.0) > 0.10)
+                    or (c and ctarget and abs(ctarget / c - 1.0) > 0.12)
                 ]
                 base_seed = os.getenv("TTS_SEED", "42").strip()
-                for i, f0 in outliers[:4]:
+                for i, f0, cen in outliers[:4]:
                     group, para_path, text = takes[i]
                     fresh = out_dir / f"{para_path.stem}.reroll.wav"
                     # Same seed would reproduce the same audio byte for byte, so
@@ -1153,10 +1269,19 @@ def _ttsapi_synthesize(
                         os.environ.pop("TTS_SEED_OVERRIDE", None)
                     _trim_lead_silence(fresh)
                     new_f0 = _median_f0(fresh)
-                    if new_f0 and abs(new_f0 - target) < abs(f0 - target):
+                    new_cen = _centroid(fresh)
+
+                    def dist(f, c):
+                        d = abs(f - target) / target if f and target else 1.0
+                        if ctarget and c:
+                            d += abs(c - ctarget) / ctarget
+                        return d
+
+                    if new_f0 and dist(new_f0, new_cen) < dist(f0, cen):
                         fresh.replace(para_path)
                         print(f"[tts] re-rolled {para_path.stem}: "
-                              f"{f0:.0f} -> {new_f0:.0f} Hz (target {target:.0f})")
+                              f"{f0:.0f}Hz/{cen:.0f} -> {new_f0:.0f}Hz/{new_cen:.0f} "
+                              f"(targets {target:.0f}/{ctarget:.0f})")
                     else:
                         fresh.unlink(missing_ok=True)
         except Exception as exc:  # noqa: BLE001
@@ -1169,6 +1294,7 @@ def _ttsapi_synthesize(
     # seam rather than closing it (x1.59 -> x1.78), and tapering each take's
     # onset did no better (x2.56). Pitch is where the "two announcers" effect
     # actually lives, so pitch is what gets corrected.
+    _slow_fast_takes(takes)
     _normalize_pitch([p for _, p, _ in takes])
     _flatten_seams([p for _, p, _ in takes])
 

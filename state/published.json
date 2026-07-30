@@ -13,5 +13,27 @@
     "sizeMb": 48.7,
     "voice": "ttsapi",
     "status": "not_uploaded"
+  },
+  {
+    "date": "2026-07-30",
+    "pgn": "2026-07-30_Fischer_vs_Berliner.pgn",
+    "archive": "2026-07-30_Fischer_vs_Berliner.mp4",
+    "sizeMb": 47.7,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Fischer Sacrificed Three Times \u2014 and the Pinned Pawn Never Moved",
+    "status": "not_uploaded"
+  },
+  {
+    "date": "2026-07-30",
+    "pgn": "2026-07-30_Dubinin_vs_Botvinnik.pgn",
+    "archive": "2026-07-30_Dubinin_vs_Botvinnik.mp4",
+    "sizeMb": 29.2,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "He Captured Botvinnik's Queen \u2014 and Was Mated Two Moves Later",
+    "status": "not_uploaded"
   }
 ]

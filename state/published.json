@@ -35,5 +35,16 @@
     "narration": "llm",
     "title": "He Captured Botvinnik's Queen \u2014 and Was Mated Two Moves Later",
     "status": "not_uploaded"
+  },
+  {
+    "date": "2026-07-30",
+    "pgn": "2026-07-30_Petrosian_vs_Pogrebissky.pgn",
+    "archive": "2026-07-30_Petrosian_vs_Pogrebissky.mp4",
+    "sizeMb": 40.2,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "He Sacrificed Four Times to Drag a King to h5",
+    "status": "not_uploaded"
   }
 ]

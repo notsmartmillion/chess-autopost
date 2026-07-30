@@ -1340,7 +1340,10 @@ in bare "Piece to square, comment" announcement form.
 Every beat that plays a move must still SAY its move once, with the square written as a
 letter-number token ("knight to f3", "queen takes e5", "castles kingside") at the moment
 the piece should be seen to move — early in the beat if the move is the point, later if
-you are building up to it.
+you are building up to it. Castling is the easy one to forget because it has no square
+to name: a castling beat must contain the word "castles", even mid-sentence — "White
+castles and now the g7 bishop stares at d4" — or the king will slide while you talk
+about something else.
 
 RHYTHM DEVICES — use all of these across the video:
 - Question then answer. THIS IS NOT OPTIONAL AND IT IS THE MOST OFTEN IGNORED RULE HERE.

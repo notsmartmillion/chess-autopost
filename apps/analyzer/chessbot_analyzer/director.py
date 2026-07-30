@@ -1711,11 +1711,17 @@ def build_script(
 
 _SENTENCE_END = tuple('.!?"”’)')
 
-# A sentence that begins "e6 ..." is read aloud as "six ..." — a leading letter
-# followed by a digit looks like scientific notation to the synthesiser, and the
-# letter is swallowed. The brief forbids it; this repairs the ones that slip
-# through, because a lost square makes the commentary wrong, not just clumsy.
-_LEADING_SQUARE = re.compile(r"^(\s*)([a-h][1-8])(?![a-z0-9])")
+# A sentence that begins "e6 ..." is read aloud as "six ..." — "e" followed by a
+# digit is scientific notation, and the letter is swallowed. The brief asks the
+# narrator not to open on a bare square at all, and this repairs what slips
+# through, because a lost file letter makes the commentary wrong rather than
+# merely clumsy.
+#
+# Only the e-file. Measured across a whole script: e6 and e4 lost their letter,
+# while sentence-initial a3, a4, c5, d4, g5 and h3 were all spoken correctly.
+# Repairing those too would prefix "And" to six sentences that read perfectly
+# well, so the net catches exactly what breaks.
+_LEADING_SQUARE = re.compile(r"^(\s*)(e[1-8])(?![a-z0-9])", re.IGNORECASE)
 
 
 def _fix_leading_squares(beats: List[Dict[str, Any]]) -> int:

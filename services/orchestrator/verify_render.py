@@ -320,6 +320,18 @@ def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) 
         rep.warn("narration", f"{len(mute_holds)}/{len(holds)} hold beats ask nothing: "
                               f"{mute_holds[:4]}")
 
+    # A sentence opening "e6 ..." is spoken "six ..." — the synthesiser reads
+    # e-then-digit as scientific notation and drops the letter, which names no
+    # square at all. The director repairs these; if any survive, the commentary
+    # ships factually wrong.
+    swallowed = [
+        b["id"] for b in beats
+        if re.search(r"(?:^|(?<=[.!?])\s+)e[1-8](?![a-z0-9])", b["text"], re.I)
+    ]
+    if swallowed:
+        rep.error("narration", f"sentence opens on an e-file square (the letter "
+                               f"will be swallowed): {swallowed[:4]}")
+
     # A spoken "pause and find it" must actually pause; the challenge without
     # the thinking time is worse than no challenge.
     cue = re.compile(r"pause (?:here|the video|for a moment|with me)|try to find|"

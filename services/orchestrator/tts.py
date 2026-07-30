@@ -644,7 +644,13 @@ def _flatten_seams(
     The first take's opening and the last take's closing cadence are left
     alone — a video should start fresh and end final.
     """
-    if os.getenv("TTS_SEAM_FLATTEN", "1").strip().lower() in ("0", "false", "no"):
+    # Default OFF. This corrected OUR take boundaries, but the service itself
+    # re-splits every request into ~450-char chunks sampled independently, so
+    # the discontinuities it chased were partly invisible ones — and at 1:27 of
+    # Petrosian-Pogrebissky it lowered a variation opening below the voice's
+    # own body, which listeners flagged immediately. The durable fix is a seed
+    # reset per chunk inside the service; until then, no contour surgery.
+    if os.getenv("TTS_SEAM_FLATTEN", "0").strip().lower() in ("0", "false", "no"):
         return
     if len(paths) < 2 or not _ffmpeg():
         return
@@ -1046,7 +1052,14 @@ def _ttsapi_synthesize(
     groups = merged
 
     def fetch(text: str, label: str) -> bytes:
-        body = json.dumps({"text": text, "voice": voice, "format": "wav"}).encode()
+        payload = {"text": text, "voice": voice, "format": "wav"}
+        # A fixed seed per request is the documented cure for Qwen3-TTS chunks
+        # drifting in timbre. The service ignores the field until it supports
+        # it, so this costs nothing to send today.
+        seed = os.getenv("TTS_SEED", "42").strip()
+        if seed and seed != "-1":
+            payload["seed"] = int(seed)
+        body = json.dumps(payload).encode()
         for attempt in range(1, attempts + 1):
             req = urllib.request.Request(
                 f"{base}/tts", data=body,

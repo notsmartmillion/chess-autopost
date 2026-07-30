@@ -1059,6 +1059,11 @@ def _ttsapi_synthesize(
         seed = os.getenv("TTS_SEED", "42").strip()
         if seed and seed != "-1":
             payload["seed"] = int(seed)
+        # Optional steadiness knob; unset means the service default. Measured
+        # inconclusive on cross-text baseline (n=4), so not set by default.
+        temp = os.getenv("TTS_TEMPERATURE", "").strip()
+        if temp:
+            payload["temperature"] = float(temp)
         body = json.dumps(payload).encode()
         for attempt in range(1, attempts + 1):
             req = urllib.request.Request(

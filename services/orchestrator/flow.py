@@ -346,11 +346,15 @@ VOICE_BACKENDS = {"ttsapi", "qwen", "elevenlabs"}
 
 def voice_backend_used() -> Optional[str]:
     """Which TTS backend actually produced the audio, per the manifest."""
+    return (_audio_manifest() or {}).get("backend")
+
+
+def _audio_manifest() -> Optional[Dict]:
     manifest = OUT / "audio_manifest.json"
     if not manifest.exists():
         return None
     try:
-        return json.loads(manifest.read_text(encoding="utf-8")).get("backend")
+        return json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
@@ -475,13 +479,27 @@ def main() -> int:
     if archived:
         log(f"archived -> {archived.relative_to(ROOT)}")
 
-    backend = voice_backend_used()
+    manifest = _audio_manifest() or {}
+    backend = manifest.get("backend")
+    script_meta = {}
+    try:
+        script_meta = json.loads(
+            (OUT / "script.json").read_text(encoding="utf-8")
+        ).get("meta", {})
+    except (OSError, ValueError):
+        pass
     entry: Dict = {
         "date": date.today().isoformat(),
         "pgn": pgn_path.name,
         "archive": archived.name if archived else None,
         "sizeMb": round(size_mb, 1),
+        # Backend alone could not tell you which of thirteen profiles spoke, nor
+        # whether the narration was written or templated — both decide whether a
+        # render is publishable, so the ledger records them.
         "voice": backend,
+        "voiceProfile": manifest.get("voice"),
+        "narration": script_meta.get("narration"),
+        "title": script_meta.get("llmTitle"),
         "status": "rendered",
     }
 

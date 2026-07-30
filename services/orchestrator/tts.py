@@ -350,6 +350,7 @@ def _align_words(
     still works — the move just lands approximately rather than exactly.
     """
     if os.getenv("QWEN_ALIGN", "1").strip().lower() in ("0", "false", "no"):
+        model_cache["aligned"] = False
         return _estimate_words(text, duration_ms)
     try:
         import whisperx  # type: ignore
@@ -402,6 +403,7 @@ def _align_words(
                         {"w": token, "s": round(float(w["start"]), 3), "e": round(float(w.get("end", w["start"])), 3)}
                     )
         if words:
+            model_cache["aligned"] = True
             return words
     except ImportError as exc:
         print(f"[tts] alignment unavailable ({exc}) — using estimated word "
@@ -411,6 +413,7 @@ def _align_words(
         if not model_cache.get("align_warned"):
             print(f"[tts] forced alignment unavailable ({exc}); using estimates")
             model_cache["align_warned"] = True
+    model_cache["aligned"] = False
     return _estimate_words(text, duration_ms)
 
 
@@ -678,14 +681,19 @@ def _ttsapi_synthesize(
                 "file": para_path.name,
                 "durationMs": duration_ms,
                 "words": words,
+                "aligned": bool(cache.get("aligned")),
             }
         else:
             ids = [item["id"] for item in group]
             texts = [item["text"] for item in group]
             per_beat = _partition_para_words(words, texts)
+            aligned = bool(cache.get("aligned"))
             # The first slice overwrites the paragraph file (same name) — write
             # slices only after the full take has been read into memory above.
-            clips.update(_split_para_wav(para_path, ids, per_beat, out_dir, fps=fps))
+            sliced = _split_para_wav(para_path, ids, per_beat, out_dir, fps=fps)
+            for c in sliced.values():
+                c["aligned"] = aligned
+            clips.update(sliced)
         if gi % 5 == 0 or gi == total:
             print(f"[tts] ttsapi para {gi}/{total} ({voice})")
     if trimmed_ms:
@@ -763,7 +771,10 @@ def synthesize(
             clips = (_ttsapi_synthesize(lines, out_dir) if resolved == "ttsapi"
                      else _qwen_synthesize(lines, out_dir))
             ext = "wav"
-            manifest = {"backend": resolved, "ext": ext, "clips": clips}
+            # Which profile spoke it, so a render can be traced back to a voice.
+            manifest = {"backend": resolved, "ext": ext,
+                        "voice": os.getenv("TTS_VOICE", "").strip() or None,
+                        "clips": clips}
             (out_dir.parent / "audio_manifest.json").write_text(
                 json.dumps(manifest, indent=2), encoding="utf-8"
             )

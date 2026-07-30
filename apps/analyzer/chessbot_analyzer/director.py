@@ -141,7 +141,7 @@ class Director:
 
     def __init__(
         self,
-        channel_name: str = "Midnight Chess",
+        channel_name: str = "Nocturne Chess",
         *,
         seed: Optional[int] = None,
         max_variation_plies: int = 4,
@@ -1657,7 +1657,7 @@ def narrate_with_llm(
 def build_script(
     facts: Dict[str, Any],
     *,
-    channel_name: str = "Midnight Chess",
+    channel_name: str = "Nocturne Chess",
     use_llm: bool = True,
     seed: Optional[int] = None,
 ) -> Dict[str, Any]:

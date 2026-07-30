@@ -65,7 +65,13 @@ const PORTRAIT = 96;
 
 /** Neutral bust used when we have no photo of a player — every game renders. */
 const PortraitPlaceholder: React.FC<{side: 'white' | 'black'}> = ({side}) => (
-  <svg width={PORTRAIT} height={PORTRAIT} viewBox="0 0 96 96" aria-hidden>
+  <svg
+    width="100%"
+    height="100%"
+    viewBox="0 0 96 96"
+    preserveAspectRatio="xMidYMid slice"
+    aria-hidden
+  >
     <rect width="96" height="96" fill={side === 'white' ? '#2a323f' : '#1b222c'} />
     <circle cx="48" cy="37" r="16" fill="#5d6b7f" />
     <path d="M16 96c0-17.7 14.3-32 32-32s32 14.3 32 32z" fill="#5d6b7f" />
@@ -98,11 +104,13 @@ export const PlayerCard: React.FC<{
   >
     <div
       style={{
-        width: PORTRAIT,
-        height: PORTRAIT,
+        // The portrait takes whatever height the card has to give, so the
+        // matchup half of the rail is faces, not padding.
+        flex: 1,
+        minHeight: 0,
+        width: '100%',
         borderRadius: 12,
         overflow: 'hidden',
-        flexShrink: 0,
         background: '#1b222c',
         // Grayscale keeps mismatched press photos from fighting the palette;
         // the side to move comes up to full strength.
@@ -266,11 +274,20 @@ export const CurrentMove: React.FC<{
     easing: Easing.out(Easing.cubic),
   });
 
+  // Every branch stretches: the panel owns half of the rail's lower section,
+  // and its content sits centred in that space instead of above a void.
+  const fill: React.CSSProperties = {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+  };
+
   if (beat.kind === 'hold') {
     // Nothing moves during a hold — the narrator is reading the position, so
     // show the assessment rather than a stale move.
     return (
-      <Panel>
+      <Panel style={fill}>
         <Label>Reading the position</Label>
         <div style={{fontSize: 34, color: THEME.text, lineHeight: 1.25}}>
           {moveNumber ? `After move ${moveNumber}` : 'Taking stock'}
@@ -284,7 +301,7 @@ export const CurrentMove: React.FC<{
 
   if (beat.branch) {
     return (
-      <Panel style={{borderColor: 'rgba(178,140,255,0.5)'}}>
+      <Panel style={{...fill, borderColor: 'rgba(178,140,255,0.5)'}}>
         <Label>Variation</Label>
         <div style={{fontSize: 42, color: THEME.alt, lineHeight: 1.2}}>
           {beat.label ?? 'Alternative line'}
@@ -297,7 +314,7 @@ export const CurrentMove: React.FC<{
   }
 
   return (
-    <Panel>
+    <Panel style={fill}>
       <Label>Move</Label>
       {/* The badge rides the move's top-right corner, the way annotation
           symbols sit beside a move everywhere else in chess. */}
@@ -380,9 +397,17 @@ export const MoveList: React.FC<{
   const window = played.slice(Math.max(0, played.length - rows));
 
   return (
-    <Panel style={{display: 'flex', flexDirection: 'column'}}>
+    <Panel style={{flex: 1, display: 'flex', flexDirection: 'column'}}>
       <Label>Moves</Label>
-      <div style={{display: 'flex', flexDirection: 'column', gap: 6}}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+          flex: 1,
+          justifyContent: 'space-evenly',
+        }}
+      >
         {window.map((entry) => {
           const isCurrentRow = entry.moveNumber === currentMoveNumber;
           return (

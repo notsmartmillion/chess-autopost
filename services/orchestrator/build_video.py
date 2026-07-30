@@ -303,7 +303,7 @@ def main() -> int:
     # --- 2) director ----------------------------------------------------
     script = build_script(
         facts,
-        channel_name=os.getenv("CHANNEL_NAME", "Midnight Chess"),
+        channel_name=os.getenv("CHANNEL_NAME", "Nocturne Chess"),
         use_llm=not args.no_llm,
         seed=args.seed,
     )

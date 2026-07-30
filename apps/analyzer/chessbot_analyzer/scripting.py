@@ -17,7 +17,7 @@ class ScriptGenerator:
       - optimize_for_audio_sync(lines)
     """
 
-    def __init__(self, channel_name: str = "Midnight Chess"):
+    def __init__(self, channel_name: str = "Nocturne Chess"):
         self.channel_name = channel_name
         self.phrase_bank = self._build_phrase_bank()
 

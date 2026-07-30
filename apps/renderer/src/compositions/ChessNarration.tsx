@@ -34,10 +34,12 @@ const BOARD_Y = (1080 - BOARD) / 2;
 // further right than the board's edge alone would suggest.
 const RAIL_X = BOARD_X + BOARD + 84;
 const RAIL_W = 1920 - RAIL_X - 96;
-// The rail reads top to bottom: who is playing, the move on screen, then the
-// game so far pinned to the bottom.
-const PLAYERS_H = 232;
-const PLAYERS_BOTTOM = 40 + PLAYERS_H + 24;
+// The rail splits into two equal halves with no dead space: the matchup on
+// top, the move panels below, together spanning exactly the board's height.
+const RAIL_TOP = 40;
+const RAIL_BOTTOM = BOARD_Y + BOARD;
+const RAIL_GAP = 24;
+const RAIL_HALF = (RAIL_BOTTOM - RAIL_TOP - RAIL_GAP) / 2;
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 // Chess annotation marks, in the conventional colours. Deliberately only the
@@ -153,7 +155,7 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
   const white = displayName(meta.white);
   const black = displayName(meta.black);
   const eventLine = [meta.event, prettyDate(meta.date)].filter(Boolean).join(' · ');
-  const channel = meta.channel ?? 'Midnight Chess';
+  const channel = meta.channel ?? 'Nocturne Chess';
 
   // Board props come from the current beat, but the board itself is mounted
   // ONCE for the whole video. Remounting it per beat destroyed and recreated
@@ -297,14 +299,14 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
         </div>
       )}
 
-      {/* Players — two cards side by side at the top of the rail */}
+      {/* Players — two cards side by side filling the rail's upper half */}
       <div
         style={{
           position: 'absolute',
           left: RAIL_X,
-          top: 40,
+          top: RAIL_TOP,
           width: RAIL_W,
-          height: PLAYERS_H,
+          height: RAIL_HALF,
           display: 'flex',
           gap: 16,
         }}
@@ -334,14 +336,15 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
         <EvalColumn cp={shownEvalCp} height={BOARD - 44} />
       </div>
 
-      {/* Analysis rail */}
+      {/* Move panels — splitting the rail's lower half between them, so the
+          column ends level with the board and holds no dead space. */}
       <div
         style={{
           position: 'absolute',
           left: RAIL_X,
-          top: PLAYERS_BOTTOM,
+          top: RAIL_TOP + RAIL_HALF + RAIL_GAP,
           width: RAIL_W,
-          height: BOARD_Y + BOARD - PLAYERS_BOTTOM,
+          height: RAIL_HALF,
           display: 'flex',
           flexDirection: 'column',
           gap: 20,
@@ -352,11 +355,7 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           moveNumber={moveNumber}
           isBlack={numberFrom?.ply ? numberFrom.ply % 2 === 0 : false}
         />
-        {/* The game so far sits at the foot of the rail, level with the bottom
-            of the board, so the eye always finds it in the same place. */}
-        <div style={{marginTop: 'auto'}}>
-          <MoveList entries={moveEntries} currentPly={shownPly} rows={3} />
-        </div>
+        <MoveList entries={moveEntries} currentPly={shownPly} rows={3} />
       </div>
 
       {/* Intro / outro card */}

@@ -72,7 +72,11 @@ const PortraitPlaceholder: React.FC<{side: 'white' | 'black'}> = ({side}) => (
   </svg>
 );
 
-export const PlayerRow: React.FC<{
+/**
+ * One player, as a card. Two of these sit side by side above the move, so the
+ * pairing reads as a matchup rather than a list.
+ */
+export const PlayerCard: React.FC<{
   name: string;
   side: 'white' | 'black';
   active: boolean;
@@ -80,20 +84,23 @@ export const PlayerRow: React.FC<{
 }> = ({name, side, active, portrait}) => (
   <div
     style={{
+      flex: 1,
+      minWidth: 0,
+      background: active ? 'rgba(90,200,250,0.07)' : THEME.panel,
+      border: `1px solid ${active ? 'rgba(90,200,250,0.45)' : THEME.panelEdge}`,
+      borderRadius: 14,
+      padding: '18px 16px',
       display: 'flex',
+      flexDirection: 'column',
       alignItems: 'center',
-      gap: 18,
-      padding: 12,
-      borderRadius: 12,
-      background: active ? 'rgba(90,200,250,0.10)' : 'transparent',
-      border: `1px solid ${active ? 'rgba(90,200,250,0.35)' : 'transparent'}`,
+      gap: 12,
     }}
   >
     <div
       style={{
         width: PORTRAIT,
         height: PORTRAIT,
-        borderRadius: 10,
+        borderRadius: 12,
         overflow: 'hidden',
         flexShrink: 0,
         background: '#1b222c',
@@ -112,21 +119,28 @@ export const PlayerRow: React.FC<{
         <PortraitPlaceholder side={side} />
       )}
     </div>
-    <div style={{flex: 1, minWidth: 0}}>
-      <div
-        style={{
-          fontSize: 34,
-          color: active ? THEME.text : THEME.muted,
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}
-      >
-        {name}
-      </div>
-      <div style={{fontSize: 16, letterSpacing: 2, color: THEME.muted, marginTop: 6}}>
-        {side.toUpperCase()}
-      </div>
+    <div
+      style={{
+        fontSize: 27,
+        lineHeight: 1.18,
+        textAlign: 'center',
+        color: active ? THEME.text : THEME.muted,
+        // Long names wrap rather than being cut: "Robert James Fischer" has to
+        // fit a half-width card without an ellipsis eating the surname.
+        overflowWrap: 'anywhere',
+      }}
+    >
+      {name}
+    </div>
+    <div
+      style={{
+        fontSize: 15,
+        letterSpacing: 2.4,
+        color: active ? THEME.accent : THEME.muted,
+        marginTop: 'auto',
+      }}
+    >
+      {side.toUpperCase()}
     </div>
   </div>
 );

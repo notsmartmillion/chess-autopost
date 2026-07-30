@@ -12,7 +12,7 @@ import {
 import {AnimatedBoard} from '../components/AnimatedBoard';
 import {
   THEME,
-  PlayerRow,
+  PlayerCard,
   EvalColumn,
   CurrentMove,
   MoveList,
@@ -34,9 +34,10 @@ const BOARD_Y = (1080 - BOARD) / 2;
 // further right than the board's edge alone would suggest.
 const RAIL_X = BOARD_X + BOARD + 84;
 const RAIL_W = 1920 - RAIL_X - 96;
-// Where the players panel ends and the rail below it begins. Two 96px portrait
-// rows plus the panel's own padding.
-const PLAYERS_BOTTOM = 40 + 276 + 24;
+// The rail reads top to bottom: who is playing, the move on screen, then the
+// game so far pinned to the bottom.
+const PLAYERS_H = 232;
+const PLAYERS_BOTTOM = 40 + PLAYERS_H + 24;
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 // Chess annotation marks, in the conventional colours. Deliberately only the
@@ -296,29 +297,25 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
         </div>
       )}
 
-      {/* Players — top right, on the wordmark's line */}
+      {/* Players — two cards side by side at the top of the rail */}
       <div
         style={{
           position: 'absolute',
           left: RAIL_X,
           top: 40,
           width: RAIL_W,
-          background: THEME.panel,
-          border: `1px solid ${THEME.panelEdge}`,
-          borderRadius: 14,
-          padding: 14,
+          height: PLAYERS_H,
           display: 'flex',
-          flexDirection: 'column',
-          gap: 8,
+          gap: 16,
         }}
       >
-        <PlayerRow
+        <PlayerCard
           name={black}
           side="black"
           active={activeSide === 'black'}
           portrait={meta.blackPortrait}
         />
-        <PlayerRow
+        <PlayerCard
           name={white}
           side="white"
           active={activeSide === 'white'}
@@ -355,7 +352,11 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           moveNumber={moveNumber}
           isBlack={numberFrom?.ply ? numberFrom.ply % 2 === 0 : false}
         />
-        <MoveList entries={moveEntries} currentPly={shownPly} rows={3} />
+        {/* The game so far sits at the foot of the rail, level with the bottom
+            of the board, so the eye always finds it in the same place. */}
+        <div style={{marginTop: 'auto'}}>
+          <MoveList entries={moveEntries} currentPly={shownPly} rows={3} />
+        </div>
       </div>
 
       {/* Intro / outro card */}

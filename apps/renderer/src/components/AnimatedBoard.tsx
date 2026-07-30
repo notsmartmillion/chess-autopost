@@ -646,12 +646,17 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
         if (t < 0) return null;
         const { x, y } = squareToXY(badge.square, squareSize, flipped);
         const d = squareSize * 0.52;
+        // On an edge square the sticker would hang off the board and get
+        // clipped — which happens exactly on h-file and 8th-rank moves, and a
+        // brilliancy is the worst thing to cut in half. Keep it inside.
+        const bx = Math.min(x + squareSize - d * 0.62, size - d);
+        const by = Math.max(y - d * 0.34, 0);
         return (
           <div
             style={{
               position: 'absolute',
-              left: x + squareSize - d * 0.62,
-              top: y - d * 0.34,
+              left: bx,
+              top: by,
               width: d,
               height: d,
               borderRadius: d / 2,

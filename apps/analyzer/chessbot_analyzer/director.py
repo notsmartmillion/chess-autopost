@@ -69,6 +69,14 @@ COLOR_GOOD = "#3ddc97"
 # the same arrow when it was not created by the move just played.
 ARROW_COOLDOWN_PLIES = 14
 
+# The channel's sign-off, word for word in every video. A closing line viewers
+# recognise is worth more than a fresh one each time, so this is appended
+# deterministically rather than left to the narrator to reinvent.
+SIGNOFF_TEMPLATE = (
+    "Thanks for watching {channel}. If you enjoyed this game, subscribe for "
+    "more quiet journeys through chess history. Until the next board, good night."
+)
+
 # Good narration often describes a capture without naming the square — "Black
 # recaptures with the c-pawn", "he grabs the queen". The verb is then the moment
 # the move happens, and a far better animation cue than a blind fraction of the
@@ -420,16 +428,17 @@ class Director:
         return [
             self._beat(
                 kind="outro",
-                text=(
-                    f"{verdict} Thank you for watching. If you enjoyed this game, "
-                    "a like really helps the channel, and I will see you in the next one."
-                ),
+                text=f"{verdict} {self.signoff()}",
                 prevFen=final_fen,
                 fen=final_fen,
                 evalCp=plies[-1].get("evalAfterCp") if plies else 0,
                 targetWords=WORD_BUDGET["outro"],
             )
         ]
+
+    def signoff(self) -> str:
+        """The channel's closing words, identical in every video."""
+        return SIGNOFF_TEMPLATE.format(channel=self.channel_name)
 
     # ---------------------------- main line ---------------------------
 
@@ -1437,12 +1446,14 @@ OTHER RULES:
 - For 'resume' beats, come back to reality with contrast: "but that is not what happened."
 - For 'hold' beats, do not announce a move — nothing moves on screen during them.
 - THE ENDING. The outro is the last thing anyone hears, so do not spend it on
-  admin. In order: say why the loser stopped — the concrete reason, a piece down
-  with a king in the open, not "he was worse"; then land the thread you have been
-  running all video, so the finish pays off the opening promise ("one pinned
-  knight decided the whole thing, and it never moved a square"); then one short,
-  warm sign-off. Never open the outro with "Thank you for watching". Do not
-  recap the move order, and do not add a moral about chess in general.
+  admin. Two things only, in order: say why the loser stopped — the concrete
+  reason, a piece down with a king in the open, not "he was worse"; then land
+  the thread you have been running all video, so the finish pays off the opening
+  promise ("one pinned knight decided the whole thing, and it never moved a
+  square"). Then STOP. Write no sign-off, no thanks, no farewell, no mention of
+  subscribing: the channel's own closing line is appended automatically after
+  your words, and anything of the kind from you only duplicates it. Do not recap
+  the move order, and do not add a moral about chess in general.
 - You can see the whole game: build across it. What you set up in minute one should pay
   off in the finale.
 
@@ -1696,6 +1707,7 @@ def build_script(
     if use_llm:
         if narrate_with_llm(script, facts):
             script["meta"]["narration"] = "llm"
+            apply_signoff(script["beats"], director.signoff())
             repaired = _fix_leading_squares(script["beats"])
             if repaired:
                 logger.info(f"Repaired {repaired} beat(s) opening on a bare square")
@@ -1722,6 +1734,24 @@ _SENTENCE_END = tuple('.!?"”’)')
 # Repairing those too would prefix "And" to six sentences that read perfectly
 # well, so the net catches exactly what breaks.
 _LEADING_SQUARE = re.compile(r"^(\s*)(e[1-8])(?![a-z0-9])", re.IGNORECASE)
+
+
+# Farewells the narrator might write despite being asked not to. Stripped
+# before the channel's own sign-off is appended, so the two never stack up.
+_MODEL_SIGNOFF = re.compile(
+    '(?:^|(?<=[.!?])\\s+)[^.!?]*(?:thanks for watching|thank you for watching|see you|until next|next time|next video|next one|subscrib|leave a like|a like really|good night|goodnight|catch you)[^.!?]*[.!?]*\\s*',
+    re.IGNORECASE,
+)
+
+
+def apply_signoff(beats: List[Dict[str, Any]], signoff: str) -> None:
+    """End the outro on the channel's own words, exactly, every time."""
+    for beat in beats:
+        if beat.get("kind") != "outro":
+            continue
+        body = _MODEL_SIGNOFF.sub(" ", beat.get("text") or "").strip()
+        body = re.sub(r"\s{2,}", " ", body)
+        beat["text"] = f"{body} {signoff}".strip() if body else signoff
 
 
 def _fix_leading_squares(beats: List[Dict[str, Any]]) -> int:

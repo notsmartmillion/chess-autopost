@@ -489,6 +489,160 @@ def _qwen_synthesize(
     return clips
 
 
+def _ffmpeg() -> Optional[str]:
+    """Locate ffmpeg, which is not on PATH in every shell on this box."""
+    import shutil as _shutil
+
+    found = _shutil.which("ffmpeg") or _shutil.which("ffmpeg.exe")
+    if found:
+        return found
+    local = os.environ.get("LOCALAPPDATA", "")
+    if local:
+        hits = list(Path(local).glob("Microsoft/WinGet/Packages/*FFmpeg*/**/ffmpeg.exe"))
+        if hits:
+            return str(hits[0])
+    return None
+
+
+def _median_f0(path: Path) -> float:
+    """Median voiced pitch of a clip, by autocorrelation. 0.0 if unvoiced."""
+    import wave as _wave
+
+    import numpy as np  # type: ignore
+
+    with _wave.open(str(path), "rb") as fh:
+        sr = fh.getframerate()
+        ch = fh.getnchannels()
+        pcm = np.frombuffer(fh.readframes(fh.getnframes()), dtype=np.int16)
+    if ch > 1:
+        pcm = pcm.reshape(-1, ch).mean(axis=1)
+    win = int(sr * 0.04)
+    lo, hi = int(sr / 350), int(sr / 70)
+    out = []
+    for i in range(0, max(0, len(pcm) - win), int(sr * 0.02)):
+        frame = pcm[i : i + win].astype(np.float64)
+        if np.sqrt((frame ** 2).mean()) < 300:  # silence / unvoiced
+            continue
+        frame -= frame.mean()
+        ac = np.correlate(frame, frame, "full")[win - 1 :]
+        if hi >= len(ac):
+            continue
+        k = int(np.argmax(ac[lo:hi]) + lo)
+        if ac[k] > 0.3 * ac[0]:
+            out.append(sr / k)
+    return float(np.median(out)) if out else 0.0
+
+
+def _pitch_shift(path: Path, factor: float) -> bool:
+    """Shift a clip's pitch by ``factor``, keeping its duration. In place.
+
+    Duration is the constraint that makes this fiddly: beat lengths, word
+    timings and the frame grid all derive from it, so a shifter that changes
+    tempo would desync the video. rubberband shifts pitch alone; the
+    asetrate+atempo pair is the fallback when it was not compiled in.
+    """
+    ff = _ffmpeg()
+    if not ff:
+        return False
+    import subprocess
+    import wave as _wave
+
+    with _wave.open(str(path), "rb") as fh:
+        sr = fh.getframerate()
+        before = fh.getnframes()
+
+    tmp = path.with_suffix(".shift.wav")
+    chains = [
+        f"rubberband=pitch={factor:.5f}",
+        f"asetrate={int(sr * factor)},aresample={sr},atempo={1 / factor:.5f}",
+    ]
+    for chain in chains:
+        try:
+            subprocess.run(
+                [ff, "-y", "-hide_banner", "-loglevel", "error",
+                 "-i", str(path), "-filter:a", chain, str(tmp)],
+                capture_output=True, check=True,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        # Pad or clip back to the exact original length: even a few
+        # milliseconds of drift would move every later frame boundary.
+        try:
+            with _wave.open(str(tmp), "rb") as fh:
+                params = fh.getparams()
+                data = fh.readframes(fh.getnframes())
+            width = params.sampwidth * params.nchannels
+            want = before * width
+            data = data[:want] + b"\x00" * max(0, want - len(data))
+            with _wave.open(str(path), "wb") as fh:
+                fh.setparams(params)
+                fh.setnframes(before)
+                fh.writeframes(data)
+            tmp.unlink(missing_ok=True)
+            return True
+        except Exception:  # noqa: BLE001
+            tmp.unlink(missing_ok=True)
+    return False
+
+
+def _normalize_pitch(
+    paths: Sequence[Path], tolerance: float = 0.025, max_shift: float = 0.10
+) -> None:
+    """Pull every take toward the run's own median pitch.
+
+    Each synthesis request establishes its own prosodic baseline, and across one
+    game those baselines spread far enough to be heard as the narrator changing
+    tone — 178 to 258 Hz measured on Fischer-Berliner, with eleven of thirty-five
+    boundaries jumping more than 15 Hz. The target is the median of the takes
+    themselves, so the voice stays self-consistent without a hand-tuned constant
+    that would need revisiting per profile.
+
+    Takes already within ``tolerance`` are left untouched, and no take is moved
+    by more than ``max_shift``: past that the artefacts cost more than the
+    inconsistency, and it usually means the take is unvoiced or mismeasured.
+    """
+    if os.getenv("TTS_PITCH_NORMALIZE", "1").strip().lower() in ("0", "false", "no"):
+        return
+    if len(paths) < 4:  # nothing meaningful to take a median of
+        return
+    try:
+        import numpy as np  # type: ignore  # noqa: F401
+    except ImportError:
+        print("[tts] numpy missing — skipping pitch normalisation")
+        return
+    if not _ffmpeg():
+        print("[tts] ffmpeg missing — skipping pitch normalisation")
+        return
+
+    measured = [(p, _median_f0(p)) for p in paths]
+    voiced = [f for _, f in measured if f > 0]
+    if len(voiced) < 4:
+        return
+    voiced.sort()
+    target = voiced[len(voiced) // 2]
+
+    shifted = 0
+    clamped = 0
+    for path, f0 in measured:
+        if not f0:
+            continue
+        factor = target / f0
+        if abs(factor - 1.0) <= tolerance:
+            continue
+        if abs(factor - 1.0) > max_shift:
+            factor = 1.0 + max_shift * (1 if factor > 1 else -1)
+            clamped += 1
+        if _pitch_shift(path, factor):
+            shifted += 1
+
+    after = [f for f in (_median_f0(p) for p in paths) if f > 0]
+    if after:
+        print(f"[tts] pitch normalised to {target:.0f} Hz: {shifted}/{len(paths)} takes "
+              f"adjusted{f' ({clamped} clamped)' if clamped else ''}; "
+              f"spread {min(voiced):.0f}-{max(voiced):.0f} -> "
+              f"{min(after):.0f}-{max(after):.0f} Hz")
+
+
 def _trim_lead_silence(path: Path, keep_ms: int = 60, threshold_db: float = -45.0) -> int:
     """Strip dead air from the front of a clip, in place. Returns ms removed.
 
@@ -664,14 +818,61 @@ def _ttsapi_synthesize(
     cache: Dict[str, Any] = {}
     total = len(groups)
     trimmed_ms = 0
+
+    # --- phase 1: fetch every take -------------------------------------
+    # The model sets a fresh prosodic baseline per request, and some requests
+    # land a long way from the voice's centre — measured at 178-258 Hz across
+    # one game, which is heard as the narrator changing tone mid-video. Nothing
+    # can be corrected until all the takes exist, because the target is their
+    # own median: that keeps the voice self-consistent without a tuned constant.
+    takes: List[Tuple[List[Dict[str, Any]], Path, str]] = []
     for gi, group in enumerate(groups, start=1):
         text = " ".join(item["text"] for item in group)
         audio = fetch(text, f"para {gi}/{total}")
         para_path = out_dir / f"{group[0]['id']}.wav"
         para_path.write_bytes(audio)
         trimmed_ms += _trim_lead_silence(para_path)
+        takes.append((group, para_path, text))
+        if gi % 5 == 0 or gi == total:
+            print(f"[tts] ttsapi para {gi}/{total} ({voice})")
 
-        import wave
+    # --- phase 2: re-roll the takes no shift could rescue ----------------
+    # A take far enough from the median needs a correction big enough to
+    # artefact, so ask for a fresh sample instead: the baseline is re-drawn per
+    # request, and a second roll usually lands nearer the voice's centre. Only
+    # kept if it is actually closer. Bounded, because this costs a request each.
+    if len(takes) >= 4 and _ffmpeg():
+        try:
+            measured = [(p, _median_f0(p)) for _, p, _ in takes]
+            voiced = sorted(f for _, f in measured if f > 0)
+            if len(voiced) >= 4:
+                target = voiced[len(voiced) // 2]
+                outliers = [
+                    (i, f) for i, (_, f) in enumerate(measured)
+                    if f and abs(target / f - 1.0) > 0.10
+                ]
+                for i, f0 in outliers[:4]:
+                    group, para_path, text = takes[i]
+                    fresh = out_dir / f"{para_path.stem}.reroll.wav"
+                    fresh.write_bytes(fetch(text, f"re-roll {para_path.stem}"))
+                    _trim_lead_silence(fresh)
+                    new_f0 = _median_f0(fresh)
+                    if new_f0 and abs(new_f0 - target) < abs(f0 - target):
+                        fresh.replace(para_path)
+                        print(f"[tts] re-rolled {para_path.stem}: "
+                              f"{f0:.0f} -> {new_f0:.0f} Hz (target {target:.0f})")
+                    else:
+                        fresh.unlink(missing_ok=True)
+        except Exception as exc:  # noqa: BLE001
+            # Cosmetic pass: never let it cost the run.
+            print(f"[tts] outlier re-roll skipped ({exc})")
+
+    # --- phase 3: even out the remaining pitch --------------------------
+    _normalize_pitch([p for _, p, _ in takes])
+
+    # --- phase 4: align and slice ---------------------------------------
+    import wave
+    for group, para_path, text in takes:
         with wave.open(str(para_path), "rb") as fh:
             duration_ms = int(fh.getnframes() / float(fh.getframerate()) * 1000)
         words = _align_words(para_path, text, duration_ms, cache)
@@ -694,8 +895,6 @@ def _ttsapi_synthesize(
             for c in sliced.values():
                 c["aligned"] = aligned
             clips.update(sliced)
-        if gi % 5 == 0 or gi == total:
-            print(f"[tts] ttsapi para {gi}/{total} ({voice})")
     if trimmed_ms:
         print(f"[tts] trimmed {trimmed_ms / 1000:.1f}s of lead-in silence "
               f"across {total} takes")

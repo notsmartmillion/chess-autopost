@@ -416,6 +416,36 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
     chained = sum(1 for c in clips.values() if c.get("chain"))
     rep.info("voice", f"{chained}/{len(clips)} clips are continuous-take slices")
 
+    # Pitch drifting between takes is heard as the narrator changing tone. It is
+    # invisible in the data unless measured, so measure it.
+    try:
+        sys.path.insert(0, str(ROOT / "services" / "orchestrator"))
+        from tts import _median_f0  # noqa: PLC0415
+
+        groups: Dict[Any, List[str]] = collections.OrderedDict()
+        for beat in beats:
+            if clips.get(beat["id"]):
+                groups.setdefault(beat.get("para"), []).append(beat["id"])
+        f0s = []
+        for ids in list(groups.values())[:60]:
+            path = OUT / "audio" / clips[ids[0]]["file"]
+            if path.exists():
+                f = _median_f0(path)
+                if f:
+                    f0s.append(f)
+        if len(f0s) >= 4:
+            f0s.sort()
+            mid = f0s[len(f0s) // 2]
+            spread = f0s[-1] - f0s[0]
+            iqr = f0s[int(len(f0s) * 0.75)] - f0s[int(len(f0s) * 0.25)]
+            rep.info("voice", f"pitch median {mid:.0f} Hz, spread {f0s[0]:.0f}-{f0s[-1]:.0f} Hz "
+                              f"(IQR {iqr:.1f})")
+            if iqr > 8:
+                rep.warn("voice", f"pitch IQR {iqr:.1f} Hz — the narrator's tone "
+                                  "shifts audibly between takes")
+    except Exception:  # noqa: BLE001
+        pass
+
 
 def check_cues(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -> None:
     beats = script.get("beats") or []

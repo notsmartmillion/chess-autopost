@@ -310,10 +310,14 @@ def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) 
                           f"max={max(words)} mean={sum(words)/len(words):.0f}")
     # A script with no questions reads as a list, and the voice never lifts.
     questions = [b["id"] for b in beats if "?" in b["text"]]
-    rep.info("narration", f"{len(questions)} beats ask a question")
-    if len(questions) < 6:
-        rep.error("narration", f"only {len(questions)} question(s) in the script; "
-                               "the brief requires at least 6")
+    # Proportional, not absolute: a 50-ply blitz game has a third of the beats
+    # of a long classic, and demanding the same count would push questions into
+    # moves that do not warrant one. Roughly one per fifteen beats.
+    floor = max(3, min(8, len(beats) // 15))
+    rep.info("narration", f"{len(questions)} beats ask a question (floor {floor})")
+    if len(questions) < floor:
+        rep.error("narration", f"only {len(questions)} question(s) across {len(beats)} "
+                               f"beats; expected at least {floor}")
     holds = [b for b in beats if b["kind"] == "hold"]
     mute_holds = [b["id"] for b in holds if "?" not in b["text"]]
     if mute_holds:

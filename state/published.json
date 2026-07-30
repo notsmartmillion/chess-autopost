@@ -57,5 +57,27 @@
     "narration": "llm",
     "title": "Tal Left a Bishop Hanging for Three Moves \u2014 Then It Took the Queen",
     "status": "not_uploaded"
+  },
+  {
+    "date": "2026-07-30",
+    "pgn": "2026-07-30_Chistiakov_vs_Bronstein.pgn",
+    "archive": "2026-07-30_Chistiakov_vs_Bronstein.mp4",
+    "sizeMb": 44.1,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "He Offered Something Eight Times \u2014 and One Pinned Knight Ended It",
+    "status": "not_uploaded"
+  },
+  {
+    "date": "2026-07-30",
+    "pgn": "2026-07-30_Mamedyarov_vs_Carlsen.pgn",
+    "archive": "2026-07-30_Mamedyarov_vs_Carlsen.mp4",
+    "sizeMb": 24.2,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "He Threw a Piece at Carlsen \u2014 and Resigned Three Moves Later",
+    "status": "not_uploaded"
   }
 ]

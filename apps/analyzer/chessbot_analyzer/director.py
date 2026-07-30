@@ -1384,7 +1384,9 @@ RHYTHM DEVICES — use all of these across the video:
       first variation beat or the beat before it, then answered by the line shown.
       A game may have one hold or none, but it always has variations: this anchor is
       what keeps the device alive in tactical games.
-    * At least SIX questions across the whole script.
+    * Roughly one question per fifteen beats across the script — six or seven in a
+      long game, three or four in a short one. Enough that the viewer is regularly
+      being asked to think, never so many that it becomes a tic.
   Ask them the way a person does — "So what is actually holding this together?",
   "Can't the knight just take it?", "Why not simply defend?" — and answer immediately
   after. Rhetorical filler with no answer is worse than no question at all.

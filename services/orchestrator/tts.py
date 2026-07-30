@@ -630,86 +630,73 @@ def _pitch_glide(
 
 
 def _flatten_seams(
-    paths: Sequence[Path], target_step_hz: float = 12.0, edge_s: float = 1.2
+    paths: Sequence[Path], target_step_hz: float = 15.0, edge_s: float = 1.2
 ) -> None:
-    """Make consecutive takes meet like sentences, not like separate speakers.
+    """Ease the pitch step where one take hands over to the next.
 
-    Each take opens ~26 Hz above its own median and closes ~25 Hz below, so a
-    seam is a ~50 Hz step from a falling cadence into a fresh attack — heard as
-    the narrator being swapped. A natural speaker resets pitch at a sentence
-    boundary too, just far less, so the goal is not zero: each seam is eased
-    until its step matches ``target_step_hz``, splitting the correction between
-    the tail below and the head above it.
+    With sampling seeded, what remains at a boundary is the utterance arc: a
+    take still closes low and the next still attacks high, deterministically.
+    This softens that hand-off under three invariants learned the hard way:
 
-    The first take's opening and the last take's closing cadence are left
-    alone — a video should start fresh and end final.
+    * SINGLE PASS — the old convergence loop compounded its per-pass caps.
+    * BOUNDED BY THE BODY — a tail may rise at most to its take's own median
+      and a head may fall at most to its own; deviation is removed, never
+      inverted, so an opening can never be pushed below the voice's body,
+      which is what listeners caught within a minute.
+    * EMPHASIS GUARD — an edge more than ~25% from its own body is expressive
+      delivery or a bad measurement, not a cold start; those seams are left
+      exactly as spoken.
     """
-    # Default OFF. This corrected OUR take boundaries, but the service itself
-    # re-splits every request into ~450-char chunks sampled independently, so
-    # the discontinuities it chased were partly invisible ones — and at 1:27 of
-    # Petrosian-Pogrebissky it lowered a variation opening below the voice's
-    # own body, which listeners flagged immediately. The durable fix is a seed
-    # reset per chunk inside the service; until then, no contour surgery.
-    if os.getenv("TTS_SEAM_FLATTEN", "0").strip().lower() in ("0", "false", "no"):
+    if os.getenv("TTS_SEAM_FLATTEN", "1").strip().lower() in ("0", "false", "no"):
         return
     if len(paths) < 2 or not _ffmpeg():
         return
 
-    # The join is judged over its last/first beat of speech, so measure tight:
-    # a wide window dilutes the very step being corrected.
-    meas = 0.6
+    meas = 0.9
+    med = [_median_f0(p) for p in paths]
+    tails = [_median_f0(p, -meas) for p in paths]
+    heads = [_median_f0(p, 0.0, meas) for p in paths]
 
-    def steps_now() -> List[Optional[float]]:
-        heads = [_median_f0(p, 0.0, meas) for p in paths]
-        tails = [_median_f0(p, -meas) for p in paths]
-        return [
-            (heads[i] - tails[i - 1]) if heads[i] and tails[i - 1] else None
+    head_fac = [1.0] * len(paths)
+    tail_fac = [1.0] * len(paths)
+    eased = skipped = 0
+    steps_before: List[float] = []
+    for i in range(1, len(paths)):
+        t_, h_, mt, mh = tails[i - 1], heads[i], med[i - 1], med[i]
+        if not (t_ and h_ and mt and mh):
+            continue
+        steps_before.append(h_ - t_)
+        if not (0.78 <= t_ / mt <= 1.28 and 0.78 <= h_ / mh <= 1.28):
+            skipped += 1
+            continue
+        excess = (h_ - t_) - target_step_hz
+        if excess <= 5:
+            continue
+        tail_target = min(t_ + excess / 2, mt)
+        head_target = max(h_ - excess / 2, mh)
+        tail_fac[i - 1] = min(tail_target / t_, 1.06)
+        head_fac[i] = max(head_target / h_, 0.94)
+        eased += 1
+    # The video opens fresh and ends final; leave both untouched.
+    head_fac[0] = 1.0
+    tail_fac[-1] = 1.0
+
+    for i, p in enumerate(paths):
+        if head_fac[i] != 1.0 or tail_fac[i] != 1.0:
+            _pitch_glide(p, head_fac[i], tail_fac[i], edge_s)
+
+    if steps_before:
+        import statistics
+
+        after = [
+            (_median_f0(paths[i], 0.0, meas) - _median_f0(paths[i - 1], -meas))
             for i in range(1, len(paths))
+            if tails[i - 1] and heads[i]
         ]
-
-    import statistics
-
-    before = steps_now()
-    seams = [s for s in before if s is not None]
-    if not seams:
-        return
-
-    # Correcting through a pitch shifter is not exact, so converge in bounded
-    # passes: apply, re-measure, correct the remainder.
-    fixed = 0
-    for _ in range(2):
-        current = steps_now()
-        heads = [_median_f0(p, 0.0, meas) for p in paths]
-        tails = [_median_f0(p, -meas) for p in paths]
-        head_fac = [1.0] * len(paths)
-        tail_fac = [1.0] * len(paths)
-        any_work = False
-        for i in range(1, len(paths)):
-            step = current[i - 1]
-            if step is None:
-                continue
-            excess = step - target_step_hz
-            if excess <= 4:
-                continue
-            tail_fac[i - 1] = min((tails[i - 1] + excess / 2) / tails[i - 1], 1.10)
-            head_fac[i] = max((heads[i] - excess / 2) / heads[i], 0.90)
-            any_work = True
-        if not any_work:
-            break
-        # First take opens the video and last take closes it: leave the
-        # opening attack and the final cadence as spoken.
-        head_fac[0] = 1.0
-        tail_fac[-1] = 1.0
-        for i, p in enumerate(paths):
-            if head_fac[i] != 1.0 or tail_fac[i] != 1.0:
-                _pitch_glide(p, head_fac[i], tail_fac[i], edge_s)
-        fixed += 1
-
-    after = [s for s in steps_now() if s is not None]
-    if fixed and after:
-        print(f"[tts] seams eased in {fixed} pass(es): median step "
-              f"{statistics.median(seams):+.0f} -> {statistics.median(after):+.0f} Hz "
-              f"(worst {max(seams, key=abs):+.0f} -> {max(after, key=abs):+.0f})")
+        print(f"[tts] seams: {eased} eased, {skipped} left as spoken (emphasis); "
+              f"median {statistics.median(steps_before):+.0f} -> "
+              f"{statistics.median(after):+.0f} Hz, "
+              f"worst {max(steps_before, key=abs):+.0f} -> {max(after, key=abs):+.0f}")
 
 
 def _pitch_shift(path: Path, factor: float) -> bool:

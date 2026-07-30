@@ -46,5 +46,16 @@
     "narration": "llm",
     "title": "He Sacrificed Four Times to Drag a King to h5",
     "status": "not_uploaded"
+  },
+  {
+    "date": "2026-07-30",
+    "pgn": "2026-07-30_Tal_vs_Dvorietzky.pgn",
+    "archive": "2026-07-30_Tal_vs_Dvorietzky.mp4",
+    "sizeMb": 35.9,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Tal Left a Bishop Hanging for Three Moves \u2014 Then It Took the Queen",
+    "status": "not_uploaded"
   }
 ]

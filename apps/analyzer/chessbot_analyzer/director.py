@@ -1356,6 +1356,11 @@ RHYTHM DEVICES — use all of these across the video:
     * EVERY beat tagged blunder or brilliant must be set up by a question, either in
       that beat or the one before it: "Can he really take? / What is wrong with the
       obvious recapture?"
+    * EVERY variation run must open with the question it exists to answer — "Why not
+      simply take the rook?", "So what was wrong with castling here?" — asked in the
+      first variation beat or the beat before it, then answered by the line shown.
+      A game may have one hold or none, but it always has variations: this anchor is
+      what keeps the device alive in tactical games.
     * At least SIX questions across the whole script.
   Ask them the way a person does — "So what is actually holding this together?",
   "Can't the knight just take it?", "Why not simply defend?" — and answer immediately

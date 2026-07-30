@@ -824,6 +824,15 @@ def _normalize_pitch(
     """
     if os.getenv("TTS_PITCH_NORMALIZE", "1").strip().lower() in ("0", "false", "no"):
         return
+    # Seeded generation already removed the chaos this was built for (178-258 Hz
+    # unseeded became 182-205 seeded). At that spread, a whole-take shift costs
+    # more than it buys: dragging one 53-second take 8% down to chase the global
+    # median darkened its timbre enough to be heard as a different narrator —
+    # while pulling it AWAY from the take beside it. Global sameness is not the
+    # goal; local continuity is, and the seam easing owns that.
+    seed_active = os.getenv("TTS_SEED", "42").strip() not in ("", "-1")
+    if seed_active:
+        return
     if len(paths) < 4:  # nothing meaningful to take a median of
         return
     try:
@@ -1043,7 +1052,7 @@ def _ttsapi_synthesize(
         # A fixed seed per request is the documented cure for Qwen3-TTS chunks
         # drifting in timbre. The service ignores the field until it supports
         # it, so this costs nothing to send today.
-        seed = os.getenv("TTS_SEED", "42").strip()
+        seed = os.getenv("TTS_SEED_OVERRIDE") or os.getenv("TTS_SEED", "42").strip()
         if seed and seed != "-1":
             payload["seed"] = int(seed)
         # Optional steadiness knob; unset means the service default. Measured
@@ -1130,10 +1139,18 @@ def _ttsapi_synthesize(
                     (i, f) for i, (_, f) in enumerate(measured)
                     if f and abs(target / f - 1.0) > 0.10
                 ]
+                base_seed = os.getenv("TTS_SEED", "42").strip()
                 for i, f0 in outliers[:4]:
                     group, para_path, text = takes[i]
                     fresh = out_dir / f"{para_path.stem}.reroll.wav"
-                    fresh.write_bytes(fetch(text, f"re-roll {para_path.stem}"))
+                    # Same seed would reproduce the same audio byte for byte, so
+                    # a seeded re-roll must explore a different one.
+                    if base_seed not in ("", "-1"):
+                        os.environ["TTS_SEED_OVERRIDE"] = str(int(base_seed) + 1 + i)
+                    try:
+                        fresh.write_bytes(fetch(text, f"re-roll {para_path.stem}"))
+                    finally:
+                        os.environ.pop("TTS_SEED_OVERRIDE", None)
                     _trim_lead_silence(fresh)
                     new_f0 = _median_f0(fresh)
                     if new_f0 and abs(new_f0 - target) < abs(f0 - target):

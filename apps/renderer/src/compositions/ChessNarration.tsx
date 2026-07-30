@@ -358,8 +358,30 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
         <MoveList entries={moveEntries} currentPly={shownPly} rows={3} />
       </div>
 
-      {/* Intro / outro card */}
-      {isCard && <TitleOverlay beat={beat} white={white} black={black} meta={meta} />}
+      {/* Intro / outro card. The intro may own its whole beat, but the outro
+          narrates the FINAL POSITION — why the loser stopped, what the game
+          hinged on — and the viewer should be looking at that board while
+          hearing it. The card fades in only for the sign-off at the end. */}
+      {isCard &&
+        (() => {
+          const segFrom = current?.from ?? 0;
+          const segDur = current?.durationInFrames ?? 1;
+          const cardAt =
+            beat.kind === 'outro'
+              ? segFrom +
+                Math.max(Math.round(segDur * 0.55), segDur - Math.round(fps * 8))
+              : 0;
+          if (frame < cardAt) return null;
+          return (
+            <TitleOverlay
+              beat={beat}
+              white={white}
+              black={black}
+              meta={meta}
+              startFrame={cardAt}
+            />
+          );
+        })()}
 
       {/* Narration audio, one clip per beat */}
       {segments.map(({beat: b, from, durationInFrames}) =>
@@ -383,9 +405,11 @@ const TitleOverlay: React.FC<{
   white: string;
   black: string;
   meta: Script['meta'];
-}> = ({beat, white, black, meta}) => {
+  /** Absolute frame the card begins fading in — 0 for the intro. */
+  startFrame?: number;
+}> = ({beat, white, black, meta, startFrame = 0}) => {
   const frame = useCurrentFrame();
-  const opacity = interpolate(frame, [0, 12], [0, 1], {
+  const opacity = interpolate(frame, [startFrame, startFrame + 18], [0, 1], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
     easing: Easing.out(Easing.cubic),

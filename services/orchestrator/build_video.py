@@ -153,6 +153,82 @@ def _mention_highlights(beat: Dict[str, Any], clip: Dict[str, Any]) -> List[Dict
     return out
 
 
+# An invitation the narration makes ("pause here and ask yourself…") that the
+# video then refuses to honour: the answer used to arrive in the next breath.
+_PAUSE_CUE = re.compile(
+    r"pause (?:here|the video|for a moment|with me)|try to find|"
+    r"see if you can (?:find|spot)|ask yourself",
+    re.IGNORECASE,
+)
+
+
+def apply_think_pauses(
+    script: Dict[str, Any], manifest: Dict[str, Any], pause_ms: int = 5000, limit: int = 2
+) -> int:
+    """Give a "pause and find it" moment an actual pause.
+
+    Inserts silence into the beat's clip right after the sentence that issues
+    the challenge, so the viewer gets thinking time on the frozen position
+    before the reveal. The padding is a whole number of video frames, so every
+    later clip stays on the frame grid, and word timings after the insertion
+    shift with the audio so cues stay honest.
+    """
+    import wave
+
+    from tts import _norm_word
+
+    clips = manifest.get("clips") or {}
+    applied = 0
+    for beat in script.get("beats", []):
+        if applied >= limit:
+            break
+        text = beat.get("text") or ""
+        cue = _PAUSE_CUE.search(text)
+        clip = clips.get(beat["id"])
+        if not cue or not clip:
+            continue
+        path = AUDIO_DIR / clip["file"]
+        words = clip.get("words") or []
+        if not path.exists() or not words:
+            continue
+
+        # The pause belongs at the end of the sentence that asks for it.
+        tokens = text.split()
+        cue_tok = len(text[: cue.start()].split())
+        end_tok = next(
+            (j for j in range(cue_tok, len(tokens))
+             if tokens[j].rstrip('"”\')').endswith((".", "!", "?"))),
+            len(tokens) - 1,
+        )
+        idx = sum(1 for t in tokens[: end_tok + 1] if _norm_word(t)) - 1
+        if not (0 <= idx < len(words)):
+            continue
+        insert_t = float(words[idx]["e"]) + 0.15
+
+        with wave.open(str(path), "rb") as fh:
+            params = fh.getparams()
+            sr = fh.getframerate()
+            data = fh.readframes(fh.getnframes())
+        width = params.sampwidth * params.nchannels
+        pad_frames = round(pause_ms * FPS / 1000)
+        pad = b"\x00" * (int(sr / FPS) * pad_frames * width)
+        cut = min(len(data), int(round(insert_t * sr)) * width)
+        with wave.open(str(path), "wb") as fh:
+            fh.setparams(params)
+            fh.writeframes(data[:cut] + pad + data[cut:])
+
+        clip["durationMs"] = int(clip["durationMs"]) + pause_ms
+        shift = pause_ms / 1000.0
+        for w in words:
+            if w["s"] >= insert_t:
+                w["s"] = round(w["s"] + shift, 3)
+                w["e"] = round(w["e"] + shift, 3)
+        beat["thinkPauseMs"] = pause_ms
+        applied += 1
+        print(f"[timing] think-pause: +{pause_ms}ms in {beat['id']} after the challenge")
+    return applied
+
+
 def resolve_timing(script: Dict[str, Any], manifest: Dict[str, Any]) -> None:
     """Attach measured durations and move-animation cues to each beat."""
     from tts import word_time
@@ -339,6 +415,10 @@ def main() -> int:
     manifest = synthesize(lines, AUDIO_DIR, backend=args.tts)
     print(f"[voice] backend={manifest['backend']} ext={manifest['ext']}")
 
+    if apply_think_pauses(script, manifest):
+        (OUT / "audio_manifest.json").write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
     resolve_timing(script, manifest)
     save_script(script, OUT / "script.json")
 

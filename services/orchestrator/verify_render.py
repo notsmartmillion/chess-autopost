@@ -320,6 +320,14 @@ def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) 
         rep.warn("narration", f"{len(mute_holds)}/{len(holds)} hold beats ask nothing: "
                               f"{mute_holds[:4]}")
 
+    # A spoken "pause and find it" must actually pause; the challenge without
+    # the thinking time is worse than no challenge.
+    cue = re.compile(r"pause (?:here|the video|for a moment|with me)|try to find|"
+                     r"see if you can (?:find|spot)|ask yourself", re.I)
+    unhonoured = [b["id"] for b in beats if cue.search(b["text"]) and not b.get("thinkPauseMs")]
+    if unhonoured:
+        rep.warn("narration", f"pause challenge with no inserted pause: {unhonoured[:3]}")
+
     # Repetition is the loudest tell that a script was generated.
     openings = collections.Counter(" ".join(b["text"].split()[:3]).lower() for b in beats)
     dupes = {k: v for k, v in openings.items() if v > 2 and k}

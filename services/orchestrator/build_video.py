@@ -54,6 +54,9 @@ MOVE_ANIM_MS = 420
 # On a quick move the narration has already moved on before the eye reaches the
 # far end, so the arrow reads as a flicker rather than as a point being made.
 MIN_ARROW_DWELL_MS = 1500
+# Backends that produce the channel's actual voice. Anything else is a
+# fallback: usable to prove the pipeline runs, never usable on the channel.
+VOICE_BACKENDS = {"ttsapi", "qwen", "elevenlabs"}
 
 
 def _load_dotenv() -> None:
@@ -361,6 +364,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--no-llm", action="store_true", help="Skip LLM narration polish")
     ap.add_argument("--no-render", action="store_true", help="Stop after writing assets")
     ap.add_argument("--seed", type=int, default=None, help="Deterministic phrasing seed")
+    ap.add_argument("--allow-fallback-voice", action="store_true",
+                    help="Render even if the voice service was unreachable and "
+                         "the audio came from the SAPI fallback")
     return ap.parse_args()
 
 
@@ -461,6 +467,24 @@ def main() -> int:
     print(f"[voice] synthesizing {len(lines)} lines (backend={args.tts})…")
     manifest = synthesize(lines, AUDIO_DIR, backend=args.tts)
     print(f"[voice] backend={manifest['backend']} ext={manifest['ext']}")
+
+    # The voice layer degrades rather than dying, which is right for an
+    # unattended daily run — flow.py keeps the render and holds the upload.
+    # Interactively it is the wrong trade: six minutes of rendering produce a
+    # video nobody can judge, in the channel's wrong voice. Stop here instead,
+    # and say what to restart.
+    if (
+        not args.allow_fallback_voice
+        and manifest["backend"] not in VOICE_BACKENDS
+        and (args.tts in VOICE_BACKENDS
+             or (args.tts == "auto" and os.getenv("TTS_VOICE", "").strip()))
+    ):
+        print(f"\n[voice] ERROR: asked for '{args.tts}' but the audio came from "
+              f"'{manifest['backend']}'.")
+        print(f"[voice] the voice service at {os.getenv('TTS_API_URL', '?')} "
+              "did not answer. Start it and run this again,")
+        print("[voice] or pass --allow-fallback-voice to render anyway.")
+        return 3
 
     if apply_think_pauses(script, manifest):
         (OUT / "audio_manifest.json").write_text(

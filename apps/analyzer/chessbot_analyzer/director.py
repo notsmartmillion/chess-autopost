@@ -910,6 +910,7 @@ class Director:
         arrows: List[Dict[str, str]] = []
 
         frm, to = ply.get("from"), ply.get("to")
+        mover = ply.get("side")
         if frm:
             highlights.append({"square": frm, "kind": "move"})
         if to:
@@ -974,10 +975,18 @@ class Director:
                 # ray runs to the edge geometrically, but drawing that far sends
                 # the arrow straight through the very piece it is about to hit.
                 #
+                # An arrow says "this move attacks that piece". It must
+                # therefore belong to the side that just moved — either the
+                # slider itself travelled, or the move opened its line. Drawn
+                # for the opponent it says the opposite: that the piece just
+                # played is under attack, which is a defensive statement the
+                # viewer reads as a mistake being pointed out.
+                if ray.get("color") != mover:
+                    continue
                 # And only when this move is the reason the line matters: the
-                # slider landed on it, the target stepped into it, or the move
-                # vacated a square that was blocking it.
-                if not move_touches(origin, target, *path[: path.index(target) + 1]):
+                # slider landed on it, or the move vacated a square that was
+                # blocking it.
+                if not move_touches(origin, *path[: path.index(target)]):
                     continue
                 if not may_draw(f"ray:{origin}->{target}", origin == to):
                     continue
@@ -986,7 +995,6 @@ class Director:
                 break
 
         # Hanging material belonging to the side that just moved.
-        mover = ply.get("side")
         for hang in (features.get("hanging") or [])[:2]:
             if hang.get("color") == mover and hang.get("square") not in {h["square"] for h in highlights}:
                 highlights.append({"square": hang["square"], "kind": "danger"})

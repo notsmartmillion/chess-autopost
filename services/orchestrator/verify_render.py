@@ -47,6 +47,10 @@ THUMB = ROOT / "apps" / "renderer" / "out" / "thumbnail.png"
 
 FPS = 30
 MOVE_ANIM_MS = 420
+# Mirrors build_video.MIN_ARROW_DWELL_MS. Kept as its own number deliberately:
+# the audit is meant to catch the build changing behaviour, which it cannot do
+# if it imports the very constant it is checking.
+MIN_ARROW_DWELL_MS = 1500
 SENTENCE_END = tuple('.!?"”’)')
 
 PIECE_BY_NAME = {
@@ -223,10 +227,15 @@ def check_script_structure(script: Dict[str, Any], pgn_path: Optional[Path], rep
 def check_board_directives(script: Dict[str, Any], rep: Report) -> None:
     beats = script.get("beats") or []
     edge_arrows, stale_arrows, off_board, no_slider = 0, 0, 0, []
+    defensive, flashed = [], []
     for beat in beats:
         board = chess.Board(beat["fen"]) if _legal_fen(beat.get("fen")) else None
         move = beat.get("move") or {}
         frm, to = move.get("from"), move.get("to")
+        if beat.get("arrows") and beat.get("durationMs"):
+            dwell = int(beat["durationMs"]) - int(beat.get("moveAtMs") or 0)
+            if dwell < MIN_ARROW_DWELL_MS:
+                flashed.append(f"{beat['id']}:{dwell}ms")
         for arrow in beat.get("arrows") or []:
             a, b = arrow.get("from"), arrow.get("to")
             if not (a and b):
@@ -257,6 +266,12 @@ def check_board_directives(script: Dict[str, Any], rep: Report) -> None:
                 }
                 if frm not in seg and to not in seg and beat["kind"] != "hold":
                     stale_arrows += 1
+                # An arrow means "the move just played attacks that piece". If
+                # it points *at* the square the mover landed on, it says the
+                # opposite — the viewer reads a defensive warning where the
+                # narration is describing an attack.
+                if b == to:
+                    defensive.append(f"{beat['id']}:{a}->{b}")
         for h in beat.get("highlights") or []:
             if not re.fullmatch(r"[a-h][1-8]", h.get("square") or ""):
                 off_board += 1
@@ -270,9 +285,16 @@ def check_board_directives(script: Dict[str, Any], rep: Report) -> None:
     if no_slider:
         rep.error("arrows", f"{len(no_slider)} arrow(s) start from an empty square: "
                             f"{no_slider[:4]}")
+    if defensive:
+        rep.error("arrows", f"{len(defensive)} arrow(s) point at the piece that "
+                            f"just moved instead of from it: {defensive[:4]}")
+    if flashed:
+        rep.error("arrows", f"{len(flashed)} arrow(s) on screen for under "
+                            f"{MIN_ARROW_DWELL_MS}ms: {flashed[:4]}")
     total = sum(len(b.get("arrows") or []) for b in beats)
-    if not (edge_arrows or stale_arrows or off_board):
-        rep.info("arrows", f"{total} arrows, all terminating on their target")
+    if not (edge_arrows or stale_arrows or off_board or defensive or flashed):
+        rep.info("arrows", f"{total} arrows, all offensive, all terminating on "
+                           "their target with time to be read")
 
 
 def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) -> None:

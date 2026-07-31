@@ -50,6 +50,10 @@ BEAT_TAIL_MS = 260
 MIN_BEAT_MS = 900
 # Keep the piece animation from starting so late it cannot finish in the beat.
 MOVE_ANIM_MS = 420
+# An attack line is only worth drawing if the viewer has time to follow it.
+# On a quick move the narration has already moved on before the eye reaches the
+# far end, so the arrow reads as a flicker rather than as a point being made.
+MIN_ARROW_DWELL_MS = 1500
 
 
 def _load_dotenv() -> None:
@@ -272,6 +276,23 @@ def resolve_timing(script: Dict[str, Any], manifest: Dict[str, Any]) -> None:
     for beat in script.get("beats", []):
         clip = clips.get(beat["id"])
         beat["mentions"] = _mention_highlights(beat, clip) if clip else []
+
+    # Third pass: drop attack lines the viewer would never have time to read.
+    # Arrows come up with the move and live to the end of the beat, so on a
+    # fast line they flash on and off inside a second. The director cannot know
+    # this — it writes the geometry before a word has been spoken — so the
+    # decision belongs here, where the real durations are finally known.
+    flashed = 0
+    for beat in script.get("beats", []):
+        if not beat.get("arrows"):
+            continue
+        dwell = int(beat["durationMs"]) - int(beat.get("moveAtMs") or 0)
+        if dwell < MIN_ARROW_DWELL_MS:
+            flashed += len(beat["arrows"])
+            beat["arrows"] = []
+    if flashed:
+        print(f"[timing] dropped {flashed} arrow(s) with under "
+              f"{MIN_ARROW_DWELL_MS}ms on screen")
 
 
 def sync_to_public(script: Dict[str, Any], manifest: Dict[str, Any]) -> None:

@@ -554,6 +554,50 @@ def _level_db(path: Path, start_s: float = 0.0, dur_s: Optional[float] = None) -
     return 10 * _math.log10(max(v, 1.0) / (32768.0 ** 2))
 
 
+def _trim_loud_takes(paths: Sequence[Path], over_db: float = 2.5, cap_db: float = 4.0) -> None:
+    """Bring a take that is loud THROUGHOUT back toward the video's level.
+
+    The seam easing is bounded by each take's own body, deliberately — so a
+    take whose whole body sits 6 dB above its neighbours sails through it,
+    and re-rolling does not help when the next sample is just as loud (b0033:
+    both rolls hot, score 0.84). Whole-take loudness *matching* was tried
+    long ago and widened seams, because it moved every take, quiet ones up.
+    This is narrower: downward only, outliers only, and only the excess above
+    the tolerance, capped. A uniform gain has no envelope to pump and no
+    resynthesis to smear; the seam passes run after and clean the residue.
+    """
+    if os.getenv("TTS_LEVEL_TRIM", "1").strip().lower() in ("0", "false", "no"):
+        return
+    if len(paths) < 4:
+        return
+    import array as _array
+    import wave as _wave
+
+    bodies = [(p, _level_db(p)) for p in paths]
+    levels = sorted(l for _, l in bodies if l is not None)
+    if len(levels) < 4:
+        return
+    med = levels[len(levels) // 2]
+    trimmed = []
+    for p, body in bodies:
+        if body is None or body - med <= over_db:
+            continue
+        cut = min(body - med - over_db, cap_db)
+        with _wave.open(str(p), "rb") as fh:
+            params = fh.getparams()
+            pcm = _array.array("h")
+            pcm.frombytes(fh.readframes(fh.getnframes()))
+        g = 10 ** (-cut / 20)
+        for i in range(len(pcm)):
+            pcm[i] = int(round(pcm[i] * g))
+        with _wave.open(str(p), "wb") as fh:
+            fh.setparams(params)
+            fh.writeframes(pcm.tobytes())
+        trimmed.append((p.stem, body - med, cut))
+    for stem, over, cut in trimmed:
+        print(f"[tts] trimmed {stem}: body {over:+.1f} dB over the video, -{cut:.1f} dB")
+
+
 def _ease_seam_levels(
     paths: Sequence[Path],
     trigger_db: float = 3.0,
@@ -1535,6 +1579,7 @@ def _ttsapi_synthesize(
     # actually lives, so pitch is what gets corrected.
     _slow_fast_takes(takes)
     _normalize_pitch([p for _, p, _ in takes])
+    _trim_loud_takes([p for _, p, _ in takes])
     _flatten_seams([p for _, p, _ in takes])
     _ease_seam_levels([p for _, p, _ in takes])
 

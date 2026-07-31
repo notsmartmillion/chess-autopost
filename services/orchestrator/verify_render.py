@@ -534,11 +534,26 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                 if iqr > 8:
                     rep.warn("voice", f"pitch IQR {iqr:.1f} Hz — take medians drift audibly")
 
+            def edge_f0(path: Path, head: bool) -> Optional[float]:
+                """Pitch at a take's edge, robust to unvoiced onsets.
+
+                A 0.6 s window on an edge that opens with breath or a
+                fricative holds almost no voiced frames, and a median over
+                five misread frames once reported +180 Hz at a seam whose
+                true step was +60. Widen until the measurement is grounded
+                in at least a second and a half of actual voicing.
+                """
+                for dur in (1.5, 2.5, 4.0):
+                    v = _median_f0(path, 0.0 if head else -dur, dur if head else None)
+                    if v:
+                        return v
+                return None
+
             # --- seams: pitch AND level, each seam judged on both ----------
             bad_seams, seam_rows = [], []
             for i in range(1, len(take_files)):
                 a, b = take_files[i - 1], take_files[i]
-                p_tail, p_head = _median_f0(a, -0.6), _median_f0(b, 0.0, 0.6)
+                p_tail, p_head = edge_f0(a, False), edge_f0(b, True)
                 l_tail, l_head = _level_db(a, -1.5), _level_db(b, 0.0, 1.5)
                 dp = (p_head - p_tail) if p_tail and p_head else 0.0
                 dl = (l_head - l_tail) if l_tail is not None and l_head is not None else 0.0

@@ -1448,6 +1448,16 @@ def _ttsapi_synthesize(
     # artefact, so ask for a fresh sample instead: the baseline is re-drawn per
     # request, and a second roll usually lands nearer the voice's centre. Only
     # kept if it is actually closer. Bounded, because this costs a request each.
+    #
+    # Two triggers. Whole-take deviation catches a take that is simply the
+    # wrong voice throughout. It is structurally blind to the commoner case —
+    # a take that OPENS hot and settles, because a ten-second anomaly averages
+    # out of a forty-second measurement (b0010: +5 dB and +34% wpm, whole-take
+    # numbers innocuous; the next render drew a +180 Hz opening the same way).
+    # So the seam each take makes with its predecessor is a trigger of its
+    # own, and the downstream easing passes are explicitly NOT the answer
+    # here: they are capped at corrections small enough to be inaudible, and
+    # a cliff that size needs a different sample, not a nudge.
     if len(takes) >= 4 and _ffmpeg():
         try:
             measured = [(p, _median_f0(p), _centroid(p)) for _, p, _ in takes]
@@ -1456,15 +1466,39 @@ def _ttsapi_synthesize(
             if len(voiced) >= 4:
                 target = voiced[len(voiced) // 2]
                 ctarget = cents[len(cents) // 2] if cents else 0
+
+                def dist(f, c):
+                    d = abs(f - target) / target if f and target else 1.0
+                    if ctarget and c:
+                        d += abs(c - ctarget) / ctarget
+                    return d
+
+                def seam_pen(i: int, path: Path) -> float:
+                    """How badly this take's opening clashes with the take
+                    before it, in the same units dist() speaks."""
+                    if i == 0:
+                        return 0.0
+                    prev = takes[i - 1][1]
+                    pen = 0.0
+                    tail, head = _median_f0(prev, -1.2), _median_f0(path, 0.0, 1.2)
+                    if tail and head:
+                        pen += max(0.0, abs(head - tail) - 30) / 150
+                    lt, lh = _level_db(prev, -1.5), _level_db(path, 0.0, 1.5)
+                    if lt is not None and lh is not None:
+                        pen += max(0.0, (lh - lt) - 3.0) / 8
+                    return pen
+
                 # Timbre is what reads as "a different person" — pitch register
                 # is allowed to breathe with the pace of the passage.
-                outliers = [
-                    (i, f, c) for i, (_, f, c) in enumerate(measured)
-                    if (f and abs(target / f - 1.0) > 0.10)
-                    or (c and ctarget and abs(ctarget / c - 1.0) > 0.12)
-                ]
+                candidates = []
+                for i, (p, f, c) in enumerate(measured):
+                    whole = (f and abs(target / f - 1.0) > 0.10) or (
+                        c and ctarget and abs(ctarget / c - 1.0) > 0.12)
+                    pen = seam_pen(i, p)
+                    if whole or pen > 0.15:
+                        candidates.append((i, f, c, pen))
                 base_seed = os.getenv("TTS_SEED", "42").strip()
-                for i, f0, cen in outliers[:4]:
+                for i, f0, cen, pen in candidates[:4]:
                     group, para_path, text = takes[i]
                     fresh = out_dir / f"{para_path.stem}.reroll.wav"
                     # Same seed would reproduce the same audio byte for byte, so
@@ -1478,20 +1512,17 @@ def _ttsapi_synthesize(
                     _trim_lead_silence(fresh)
                     new_f0 = _median_f0(fresh)
                     new_cen = _centroid(fresh)
-
-                    def dist(f, c):
-                        d = abs(f - target) / target if f and target else 1.0
-                        if ctarget and c:
-                            d += abs(c - ctarget) / ctarget
-                        return d
-
-                    if new_f0 and dist(new_f0, new_cen) < dist(f0, cen):
+                    old_score = dist(f0, cen) + pen
+                    new_score = dist(new_f0, new_cen) + seam_pen(i, fresh)
+                    if new_f0 and new_score < old_score:
                         fresh.replace(para_path)
                         print(f"[tts] re-rolled {para_path.stem}: "
                               f"{f0:.0f}Hz/{cen:.0f} -> {new_f0:.0f}Hz/{new_cen:.0f} "
-                              f"(targets {target:.0f}/{ctarget:.0f})")
+                              f"(score {old_score:.2f} -> {new_score:.2f})")
                     else:
                         fresh.unlink(missing_ok=True)
+                        print(f"[tts] re-roll of {para_path.stem} no better; "
+                              f"keeping the original (score {old_score:.2f})")
         except Exception as exc:  # noqa: BLE001
             # Cosmetic pass: never let it cost the run.
             print(f"[tts] outlier re-roll skipped ({exc})")

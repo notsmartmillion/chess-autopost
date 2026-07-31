@@ -256,10 +256,15 @@ class Director:
         # Seeded on the pairing so a given game always draws the same quote:
         # a rebuild of yesterday's video should not silently become a different
         # video, and a stable pick is one less thing for the audit to chase.
+        # crc32, not hash() — Python salts hash() per process, which made this
+        # "seed" a coin flip between runs.
+        import zlib
+
+        pairing = f"{meta.get('white')}|{meta.get('black')}".encode("utf-8")
         quote = quotes.pick(
             meta.get("white"),
             meta.get("black"),
-            seed=hash((meta.get("white"), meta.get("black"))) & 0xFFFF,
+            seed=zlib.crc32(pairing) & 0xFFFF,
         )
 
         return {

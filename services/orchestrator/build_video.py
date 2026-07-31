@@ -364,6 +364,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--no-llm", action="store_true", help="Skip LLM narration polish")
     ap.add_argument("--no-render", action="store_true", help="Stop after writing assets")
     ap.add_argument("--seed", type=int, default=None, help="Deterministic phrasing seed")
+    ap.add_argument("--reuse-narration", action="store_true",
+                    help="Reuse the previous build's narration text and listing "
+                         "metadata, so only non-narration changes show in the "
+                         "output — the A/B switch")
     ap.add_argument("--allow-fallback-voice", action="store_true",
                     help="Render even if the voice service was unreachable and "
                          "the audio came from the SAPI fallback")
@@ -407,9 +411,40 @@ def main() -> int:
     script = build_script(
         facts,
         channel_name=os.getenv("CHANNEL_NAME", "Nocturne Chess"),
-        use_llm=not args.no_llm,
+        use_llm=not args.no_llm and not args.reuse_narration,
         seed=args.seed,
     )
+
+    # The narration model writes fresh text every run, so two builds of the
+    # same game are never the same video — which makes A/B-ing a voice or
+    # render change impossible. --reuse-narration copies the previous build's
+    # words (and listing metadata) onto this build's beats, so the only thing
+    # that changes is what the change changed.
+    if args.reuse_narration:
+        prior_path = OUT / "script.json"
+        try:
+            prior = json.loads(prior_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"[script] ERROR: --reuse-narration needs a previous "
+                  f"{prior_path.name} ({exc})")
+            return 2
+        texts = {b["id"]: b.get("text") for b in prior.get("beats", [])}
+        matched = [b for b in script["beats"] if texts.get(b["id"])]
+        # The beat list is derived from the facts, so a mismatch means the
+        # analysis changed under us and the old words describe another video.
+        if len(matched) < len(script["beats"]) * 0.9:
+            print(f"[script] ERROR: only {len(matched)}/{len(script['beats'])} "
+                  "beats match the previous script — the analysis has changed; "
+                  "rerun without --reuse-narration")
+            return 2
+        for b in script["beats"]:
+            if texts.get(b["id"]):
+                b["text"] = texts[b["id"]]
+        for key in ("llmTitle", "llmHook", "llmThumb", "quote", "narration"):
+            if prior.get("meta", {}).get(key) is not None:
+                script["meta"][key] = prior["meta"][key]
+        print(f"[script] reusing narration from previous build "
+              f"({len(matched)} beats, title: {script['meta'].get('llmTitle')!r})")
     beats = script.get("beats", [])
     variations = sum(1 for b in beats if b["kind"] == "variation")
     print(

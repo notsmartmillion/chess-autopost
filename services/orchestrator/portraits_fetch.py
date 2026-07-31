@@ -151,8 +151,11 @@ def _commons_info(filename: str, width: int = 640) -> Optional[Dict[str, Any]]:
         f"&iiprop=extmetadata|url&iiurlwidth={width}"
         f"&titles=File:{urllib.parse.quote(filename)}"
     )
-    if not data:
-        return None
+    if data is None:
+        # The API did not answer. Distinct from "this file does not exist" —
+        # conflating the two writes a permanent miss marker for a player whose
+        # portrait is simply behind a rate limit, and they never get a face.
+        raise LookupFailed(f"imageinfo lookup failed for {filename}")
     pages = (data.get("query") or {}).get("pages") or {}
     for page in pages.values():
         info = (page.get("imageinfo") or [{}])[0]

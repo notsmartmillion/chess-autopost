@@ -572,8 +572,21 @@ def _pitch_glide(
     120 ms, which is at the threshold of pitch discrimination in running
     speech — heard as natural drift, not as processing.
 
-    Duration is sacred (beat lengths, word timings and the frame grid all hang
-    off it), so the output is padded or clipped back to the exact input length.
+    "Leaving the middle untouched" has to be enforced by only *feeding it* the
+    edges. The first version drove one rubberband instance across the whole
+    file with asendcmd and set the factor to 1.0 in the middle, on the
+    assumption that unity means bypass. It does when it is constant — a whole
+    file at pitch=1.0 comes back sample-identical — but once the stretcher has
+    been engaged it keeps re-synthesizing, and the nominally untouched middle
+    came back correlating 0.56 with the original. A phase vocoder rebuilding
+    five of seven takes while the other two stayed raw is audible twice over:
+    as a soft, smeared quality on the processed takes, and as a change of
+    timbre at the joins between processed and unprocessed ones.
+
+    So each edge is cut out, processed alone, and crossfaded back over the
+    original body. Duration is sacred — beat lengths, word timings and the
+    frame grid all hang off it — so every segment is padded or clipped back to
+    the exact sample count it started with.
     """
     if abs(head_factor - 1.0) < 0.01 and abs(tail_factor - 1.0) < 0.01:
         return True
@@ -592,6 +605,17 @@ def _pitch_glide(
     if edge_s < 0.3:
         return False
 
+    import array as _array
+
+    with _wave.open(str(path), "rb") as fh:
+        params = fh.getparams()
+        samples = _array.array("h")
+        samples.frombytes(fh.readframes(before))
+    if params.nchannels != 1 or params.sampwidth != 2:
+        return False
+
+    n_edge = int(edge_s * sr)
+    xf = int(0.020 * sr)  # crossfade back onto the body
     # Hold the full correction across the join itself, then ease it away. An
     # immediate taper is what made the first attempt too weak: by the time the
     # listener's ear settles on the new take, most of the correction had
@@ -599,47 +623,89 @@ def _pitch_glide(
     plateau = min(0.5, edge_s / 3)
     ramp = edge_s - plateau
     steps = 8
-    lines = [f"0.000 rubberband pitch {head_factor:.5f};"]
-    for i in range(steps + 1):
-        t = plateau + ramp * i / steps
-        w = (1 + math.cos(math.pi * i / steps)) / 2
-        f = 1.0 + (head_factor - 1.0) * w
-        lines.append(f"{t:.3f} rubberband pitch {f:.5f};")
-    for i in range(steps + 1):
-        t = (total_s - edge_s) + ramp * i / steps
-        w = (1 - math.cos(math.pi * i / steps)) / 2
-        f = 1.0 + (tail_factor - 1.0) * w
-        lines.append(f"{max(0.0, t):.3f} rubberband pitch {f:.5f};")
-    lines.append(f"{max(0.0, total_s - 0.05):.3f} rubberband pitch {tail_factor:.5f};")
 
-    cmds = path.with_suffix(".cmds")
-    cmds.write_text("\n".join(lines) + "\n", encoding="ascii")
-    tmp = path.with_suffix(".glide.wav")
-    try:
-        # cwd trick: sendcmd's f= argument chokes on Windows drive colons.
-        subprocess.run(
-            [ff, "-y", "-hide_banner", "-loglevel", "error",
-             "-i", path.name,
-             "-af", f"asendcmd=f={cmds.name},rubberband=pitch={head_factor:.5f}",
-             tmp.name],
-            cwd=str(path.parent), capture_output=True, check=True,
+    def _ramp(factor: float, head: bool) -> List[str]:
+        out = []
+        for i in range(steps + 1):
+            if head:
+                t = plateau + ramp * i / steps
+                w = (1 + math.cos(math.pi * i / steps)) / 2
+            else:
+                t = ramp * i / steps
+                w = (1 - math.cos(math.pi * i / steps)) / 2
+            out.append(f"{t:.3f} rubberband pitch {1.0 + (factor - 1.0) * w:.5f};")
+        return out
+
+    def _process(seg: "_array.array", factor: float, head: bool) -> Optional["_array.array"]:
+        """Run one edge through rubberband, back at exactly its own length."""
+        want = len(seg)
+        cmds = path.with_suffix(".cmds")
+        src = path.with_suffix(".edge.wav")
+        dst = path.with_suffix(".edgeout.wav")
+        start = factor if head else 1.0
+        cmds.write_text(
+            "\n".join([f"0.000 rubberband pitch {start:.5f};"] + _ramp(factor, head)) + "\n",
+            encoding="ascii",
         )
-        with _wave.open(str(tmp), "rb") as fh:
-            params = fh.getparams()
-            data = fh.readframes(fh.getnframes())
-        width = params.sampwidth * params.nchannels
-        want = before * width
-        data = data[:want] + b"\x00" * max(0, want - len(data))
-        with _wave.open(str(path), "wb") as fh:
-            fh.setparams(params)
-            fh.setnframes(before)
-            fh.writeframes(data)
-        return True
-    except Exception:  # noqa: BLE001
+        try:
+            with _wave.open(str(src), "wb") as fh:
+                fh.setparams(params)
+                fh.setnframes(want)
+                fh.writeframes(seg.tobytes())
+            # cwd trick: sendcmd's f= argument chokes on Windows drive colons.
+            subprocess.run(
+                [ff, "-y", "-hide_banner", "-loglevel", "error",
+                 "-i", src.name,
+                 "-af", f"asendcmd=f={cmds.name},rubberband=pitch={start:.5f}",
+                 dst.name],
+                cwd=str(path.parent), capture_output=True, check=True,
+            )
+            with _wave.open(str(dst), "rb") as fh:
+                out = _array.array("h")
+                out.frombytes(fh.readframes(fh.getnframes()))
+            del out[want:]
+            out.extend([0] * (want - len(out)))
+            return out
+        except Exception:  # noqa: BLE001
+            return None
+        finally:
+            for f in (cmds, src, dst):
+                f.unlink(missing_ok=True)
+
+    def _blend(dst_off: int, edge: "_array.array", fade_at_end: bool) -> None:
+        """Write an edge back, crossfading the join so no step survives it."""
+        for i in range(len(edge)):
+            if fade_at_end and i >= len(edge) - xf:
+                w = (len(edge) - i) / xf
+            elif not fade_at_end and i < xf:
+                w = i / xf
+            else:
+                w = 1.0
+            j = dst_off + i
+            samples[j] = int(round(edge[i] * w + samples[j] * (1.0 - w)))
+
+    touched = False
+    if abs(head_factor - 1.0) >= 0.01 and n_edge + xf <= before:
+        edge = _process(samples[0:n_edge + xf], head_factor, True)
+        if edge is None:
+            return False
+        _blend(0, edge, fade_at_end=True)
+        touched = True
+    if abs(tail_factor - 1.0) >= 0.01 and n_edge + xf <= before:
+        off = before - (n_edge + xf)
+        edge = _process(samples[off:before], tail_factor, False)
+        if edge is None:
+            return False
+        _blend(off, edge, fade_at_end=False)
+        touched = True
+    if not touched:
         return False
-    finally:
-        tmp.unlink(missing_ok=True)
-        cmds.unlink(missing_ok=True)
+
+    with _wave.open(str(path), "wb") as fh:
+        fh.setparams(params)
+        fh.setnframes(before)
+        fh.writeframes(samples.tobytes())
+    return True
 
 
 def _flatten_seams(

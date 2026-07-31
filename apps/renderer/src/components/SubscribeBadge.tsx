@@ -41,10 +41,12 @@ export const SubscribeBadge: React.FC<{
     <div
       style={{
         position: 'absolute',
-        right: 96,
-        // Clear of the move list, which ends level with the bottom of the
-        // board. Sitting any higher puts the badge on top of the moves.
-        bottom: 22,
+        // The strip along the top, between the wordmark and the player cards:
+        // the one place on the layout that is empty in every frame of every
+        // video, so nothing has to move aside to make room. Right edge aligned
+        // to the board's, which is a line the eye already follows.
+        right: 1920 - (96 + 880),
+        top: 30,
         display: 'flex',
         alignItems: 'center',
         gap: 16,

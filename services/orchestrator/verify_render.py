@@ -717,6 +717,47 @@ def check_metadata(script: Dict[str, Any], rep: Report) -> None:
     if hook and len(hook) < 40:
         rep.warn("metadata", "description hook is very short")
 
+    # Thumbnail overlay. There is no room on the card to absorb a long line,
+    # so anything out of shape has to fall back to the template hook rather
+    # than ship a picture with text running off the edge.
+    thumb = (meta.get("llmThumb") or "").strip()
+    if not thumb:
+        rep.warn("metadata", "no model-written thumbnail line; using the generic template")
+    else:
+        words = thumb.split()
+        lines = [ln for ln in thumb.splitlines() if ln.strip()]
+        if len(words) > 6 or len(lines) != 2:
+            rep.error("metadata",
+                      f"thumbnail line is {len(words)} words on {len(lines)} line(s); "
+                      "it will overflow the card")
+        elif thumb != thumb.upper():
+            rep.warn("metadata", "thumbnail line is not upper case")
+        else:
+            rep.info("metadata", "thumbnail: " + thumb.replace("\n", " / "))
+
+    # Intro quotation. Never model-written, so the only thing to check is that
+    # what shipped is really one of the curated entries — a quote that drifted
+    # is a misattribution under a real person's name.
+    sys.path.insert(0, str(ROOT / "apps" / "analyzer"))
+    from chessbot_analyzer import quotes  # noqa: PLC0415
+
+    quote = meta.get("quote") or {}
+    if not quote.get("text"):
+        rep.info("quote", "no intro quotation for this pairing")
+    else:
+        known = {t for texts in quotes.BY_PLAYER.values() for t in texts}
+        known |= {t for _, t in quotes.GENERAL}
+        if quote["text"] not in known:
+            rep.error("quote", "intro quotation is not in the curated table — "
+                               "it must never be generated")
+        else:
+            portrait = quote.get("portrait")
+            if portrait and not (PUB / "portraits" / portrait).exists():
+                rep.error("quote", f"quote portrait {portrait} is missing; "
+                                   "the card will show a broken image")
+            rep.info("quote", f"{quote['author']}"
+                              f"{' (with portrait)' if portrait else ''}")
+
 
 # ---------------------------------------------------------------------------
 

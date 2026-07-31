@@ -441,6 +441,13 @@ def main() -> int:
                 script["meta"][key] = candidate.name
                 break
 
+    # The quote's author often is not one of today's players — Nimzowitsch has
+    # no game in the pool but plenty to say — so their portrait may simply not
+    # be cached. The card lays out fine without one; a broken image does not.
+    quote = script["meta"].get("quote") or {}
+    if quote.get("portrait") and not (PUB / "portraits" / quote["portrait"]).exists():
+        quote["portrait"] = None
+
     save_script(script, OUT / "script.json")
 
     # --- 3) voice -------------------------------------------------------

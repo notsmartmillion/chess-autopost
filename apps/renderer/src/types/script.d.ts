@@ -67,6 +67,10 @@ export interface ScriptMeta {
   /** Title + description hook written by the narration model. */
   llmTitle?: string | null;
   llmHook?: string | null;
+  /** Short overlay line for the thumbnail, written by the narration model. */
+  llmThumb?: string | null;
+  /** Intro quotation. Hand-checked table, never model-written. */
+  quote?: {text: string; author: string; portrait?: string | null} | null;
 }
 
 export interface Script {

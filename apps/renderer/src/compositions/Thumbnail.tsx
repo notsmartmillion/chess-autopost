@@ -1,5 +1,5 @@
 import React from 'react';
-import {AbsoluteFill} from 'remotion';
+import {AbsoluteFill, Img, staticFile} from 'remotion';
 import {AnimatedBoard} from '../components/AnimatedBoard';
 import {THEME, Wordmark} from '../components/AnalysisRail';
 import type {Script} from '../types/script';
@@ -38,6 +38,34 @@ const year = (raw?: string | null): string | null => {
   const m = (raw ?? '').match(/^(\d{4})/);
   return m ? m[1] : null;
 };
+
+/** One player's face, or nothing at all when we have no portrait for them. */
+const ThumbFace: React.FC<{src?: string | null; accent: string}> = ({src, accent}) =>
+  src ? (
+    <div
+      style={{
+        // Large enough to still read as a face at browse size: a YouTube
+        // thumbnail is shown around 360px wide, so anything under about 180px
+        // here arrives as a grey smudge rather than a person.
+        width: 196,
+        height: 250,
+        flexShrink: 0,
+        borderRadius: 8,
+        overflow: 'hidden',
+        boxShadow: `0 12px 34px rgba(0,0,0,0.55), 0 0 0 2px ${accent}66`,
+      }}
+    >
+      <Img
+        src={staticFile(`portraits/${src}`)}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'cover',
+          filter: 'grayscale(1) contrast(1.08)',
+        }}
+      />
+    </div>
+  ) : null;
 
 /**
  * YouTube thumbnail in the Analysis Deck style: the game's most dramatic
@@ -82,8 +110,13 @@ export const Thumbnail: React.FC<ThumbnailProps> = ({script}) => {
   const winner =
     meta.result === '1-0' ? white : meta.result === '0-1' ? black : null;
 
+  // The model saw the whole game and writes a line specific to it. The
+  // templates below are the safety net: they are generic by construction, so
+  // every brilliancy the channel ever posts would otherwise carry the same
+  // four words.
   let hook: string;
-  if (hero?.tag === 'brilliant') hook = 'THE MOVE\nNOBODY SAW';
+  if (meta.llmThumb) hook = meta.llmThumb;
+  else if (hero?.tag === 'brilliant') hook = 'THE MOVE\nNOBODY SAW';
   else if (hero?.tag === 'blunder') hook = 'THE MOVE\nTHAT LOST IT';
   else if (hero?.tag === 'great') hook = 'THE IDEA THAT\nDECIDED IT';
   else if (hero?.tag === 'mistake') hook = 'THE MISTAKE\nTHAT COST IT';
@@ -143,7 +176,13 @@ export const Thumbnail: React.FC<ThumbnailProps> = ({script}) => {
       >
         <div
           style={{
-            fontSize: 96,
+            // The model's line is short but not fixed-length, and the column is
+            // 872px wide. Size to the longest line so a three-word line of long
+            // words shrinks instead of running off the card.
+            fontSize: Math.min(
+              96,
+              Math.round(1560 / Math.max(...hook.split('\n').map((l) => l.length), 1))
+            ),
             lineHeight: 1.06,
             fontWeight: 800,
             letterSpacing: -1,
@@ -154,9 +193,21 @@ export const Thumbnail: React.FC<ThumbnailProps> = ({script}) => {
           {hook}
         </div>
         <div style={{height: 8, width: 150, background: accent, margin: '38px 0 34px', borderRadius: 4}} />
-        <div style={{fontSize: 46, color: THEME.text, lineHeight: 1.35}}>{white}</div>
-        <div style={{fontSize: 30, color: THEME.muted, margin: '6px 0'}}>versus</div>
-        <div style={{fontSize: 46, color: THEME.text, lineHeight: 1.35}}>{black}</div>
+
+        {/* Faces. A thumbnail with two people looking out of it is read as a
+            contest between them; the same thumbnail with only names on it is
+            read as a diagram. The portraits are already downloaded and
+            licensed for the video, so this costs nothing. */}
+        <div style={{display: 'flex', alignItems: 'center', gap: 26}}>
+          <ThumbFace src={meta.whitePortrait} accent={accent} />
+          <div style={{minWidth: 0}}>
+            <div style={{fontSize: 44, color: THEME.text, lineHeight: 1.3}}>{white}</div>
+            <div style={{fontSize: 26, color: THEME.muted, margin: '4px 0'}}>versus</div>
+            <div style={{fontSize: 44, color: THEME.text, lineHeight: 1.3}}>{black}</div>
+          </div>
+          <ThumbFace src={meta.blackPortrait} accent={accent} />
+        </div>
+
         {(meta.event || y) && (
           <div style={{fontSize: 28, color: THEME.muted, marginTop: 26, letterSpacing: 1.2}}>
             {[meta.event, y].filter(Boolean).join('  ·  ')}

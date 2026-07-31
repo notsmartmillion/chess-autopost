@@ -19,6 +19,8 @@ import {
   Wordmark,
   MoveListEntry,
 } from '../components/AnalysisRail';
+import {QuoteCard} from '../components/QuoteCard';
+import {SubscribeBadge} from '../components/SubscribeBadge';
 import type {Beat, Script} from '../types/script';
 
 export type ChessNarrationProps = {
@@ -137,6 +139,31 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
     }
     return [...byNumber.values()].sort((a, b) => a.moveNumber - b.moveNumber);
   }, [beats]);
+
+  // The last intro beat is the one that carries the quotation.
+  const lastIntroId = useMemo(() => {
+    const intros = beats.filter((b) => b.kind === 'intro');
+    return intros.length ? intros[intros.length - 1].id : null;
+  }, [beats]);
+
+  // Two subscribe prompts. The first once the viewer has committed to the game
+  // — early enough to matter, late enough not to be an ad before the content.
+  // The second over the sign-off, where asking is expected. Both are skipped
+  // if the video is too short to hold them apart.
+  const subscribeAt: number[] = useMemo(() => {
+    const total = segments.length
+      ? segments[segments.length - 1].from + segments[segments.length - 1].durationInFrames
+      : 0;
+    const outro = segments.find((s) => s.beat.kind === 'outro');
+    const first = Math.round(fps * 75);
+    const second = outro
+      ? outro.from + Math.round(outro.durationInFrames * 0.35)
+      : total - Math.round(fps * 14);
+    const out: number[] = [];
+    if (second - first > fps * 30) out.push(first);
+    if (second > first) out.push(second);
+    return out;
+  }, [segments, fps]);
 
   if (!script || beats.length === 0) {
     return (
@@ -377,6 +404,12 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
         (() => {
           const segFrom = current?.from ?? 0;
           const segDur = current?.durationInFrames ?? 1;
+          // The last intro beat hands over to the quotation: the pairing has
+          // already been read out by then, so leaving the same names up is
+          // dead air with a picture attached.
+          if (meta.quote && beat.id === lastIntroId) {
+            return <QuoteCard quote={meta.quote} startFrame={segFrom} />;
+          }
           const cardAt =
             beat.kind === 'outro'
               ? segFrom +
@@ -393,6 +426,13 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
             />
           );
         })()}
+
+      {/* Subscribe prompt, twice: once the viewer is invested in the game,
+          and again under the sign-off. Never during the intro cards, which
+          are already carrying text. */}
+      {subscribeAt.map((at, i) => (
+        <SubscribeBadge key={`sub-${i}`} startFrame={at} holdFrames={fps * 5} />
+      ))}
 
       {/* Narration audio, one clip per beat */}
       {segments.map(({beat: b, from, durationInFrames}) =>

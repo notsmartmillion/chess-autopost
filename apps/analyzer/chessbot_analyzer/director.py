@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import chess
 
+from . import quotes
 from .utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -252,11 +253,21 @@ class Director:
         beats.extend(self._outro_beats(meta, summary, facts))
         self._assign_paragraphs(beats)
 
+        # Seeded on the pairing so a given game always draws the same quote:
+        # a rebuild of yesterday's video should not silently become a different
+        # video, and a stable pick is one less thing for the audit to chase.
+        quote = quotes.pick(
+            meta.get("white"),
+            meta.get("black"),
+            seed=hash((meta.get("white"), meta.get("black"))) & 0xFFFF,
+        )
+
         return {
             "meta": {
                 **meta,
                 "channel": self.channel_name,
                 "opening": facts.get("opening"),
+                "quote": quote,
             },
             "beats": beats,
         }
@@ -1479,8 +1490,15 @@ placed to describe it.
   game does not deliver.
 - "hook": two or three sentences for the video description. Say what happens and why
   it is worth ten minutes, without spoiling the final move.
+- "thumb": the words printed on the thumbnail. THREE TO SIX WORDS, upper case, in
+  two lines separated by a newline. It is read at the size of a postage stamp
+  next to eleven other videos, so it must land in one glance: no punctuation, no
+  player names (their faces are already on it), no move notation, no repeat of
+  the title's exact wording. It should raise the question the title answers —
+  "HE GAVE UP\nHIS QUEEN", "THIS SHOULD\nNOT WORK", "ONE MOVE\nTOO LATE". Never
+  promise something the game does not contain.
 
-Return JSON: {"title": "...", "hook": "...", "beats": [{"id": "<beat id>", "text": "<narration>"}, ...]}
+Return JSON: {"title": "...", "hook": "...", "thumb": "...", "beats": [{"id": "<beat id>", "text": "<narration>"}, ...]}
 covering every beat id given."""
 
 
@@ -1539,11 +1557,43 @@ def _compact_beat_for_llm(beat: Dict[str, Any], ply_facts: Optional[Dict[str, An
     return out
 
 
+def _clean_thumb(raw: Optional[str]) -> Optional[str]:
+    """Force the thumbnail line into something that renders.
+
+    The model is asked for two short upper-case lines, and usually obliges, but
+    a thumbnail is the one asset with no room to absorb a bad answer: it is
+    read at a couple of hundred pixels wide, so a stray full sentence overflows
+    the card and the video ships with a broken picture. Anything that does not
+    fit the shape is rejected outright, and the template hook takes over.
+    """
+    text = (raw or "").strip().strip('"').strip()
+    if not text:
+        return None
+    # Strip punctuation the design has no room for, keeping the line break.
+    text = re.sub(r"[.,;:!?\"'—–-]+", " ", text)
+    words = text.split()
+    if not (2 <= len(words) <= 6):
+        return None
+    if any(len(w) > 14 for w in words):
+        return None
+
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if len(lines) != 2:
+        # Break it ourselves, as close to the middle as the words allow.
+        mid = (len(words) + 1) // 2
+        lines = [" ".join(words[:mid]), " ".join(words[mid:])]
+    out = "\n".join(
+        re.sub(r"[.,;:!?\"'—–-]+", " ", ln).strip().upper() for ln in lines
+    )
+    return re.sub(r"[ \t]+", " ", out) or None
+
+
 NARRATION_SCHEMA = {
     "type": "object",
     "properties": {
         "title": {"type": "string"},
         "hook": {"type": "string"},
+        "thumb": {"type": "string"},
         "beats": {
             "type": "array",
             "items": {
@@ -1557,7 +1607,7 @@ NARRATION_SCHEMA = {
             },
         }
     },
-    "required": ["title", "hook", "beats"],
+    "required": ["title", "hook", "thumb", "beats"],
     "additionalProperties": False,
 }
 
@@ -1686,6 +1736,9 @@ def narrate_with_llm(
         script["meta"]["llmTitle"] = title
     if hook:
         script["meta"]["llmHook"] = hook
+    thumb = _clean_thumb(obj.get("thumb"))
+    if thumb:
+        script["meta"]["llmThumb"] = thumb
 
     rewritten: Dict[str, str] = {}
     for item in obj.get("beats", obj if isinstance(obj, list) else []):

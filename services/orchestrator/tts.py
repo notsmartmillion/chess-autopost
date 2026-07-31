@@ -522,6 +522,143 @@ def _ffmpeg() -> Optional[str]:
     return None
 
 
+def _level_db(path: Path, start_s: float = 0.0, dur_s: Optional[float] = None) -> Optional[float]:
+    """How loud the speech in a segment is, in dBFS.
+
+    90th percentile of 20 ms frame RMS: robust to the pauses that dominate a
+    mean and to the single consonant bursts that dominate a peak. ``start_s``
+    may be negative to measure from the end, matching ``_median_f0``.
+    """
+    import array as _array
+    import math as _math
+    import wave as _wave
+
+    with _wave.open(str(path), "rb") as fh:
+        sr = fh.getframerate()
+        n = fh.getnframes()
+        pcm = _array.array("h")
+        pcm.frombytes(fh.readframes(n))
+    if start_s < 0:
+        start_s = max(0.0, n / sr + start_s)
+    s = int(start_s * sr)
+    e = n if dur_s is None else min(n, s + int(dur_s * sr))
+    step = int(0.02 * sr)
+    frames = []
+    for i in range(s, e - step, step):
+        seg = pcm[i:i + step]
+        frames.append(sum(v * v for v in seg) / len(seg))
+    if not frames:
+        return None
+    frames.sort()
+    v = frames[int(len(frames) * 0.9)]
+    return 10 * _math.log10(max(v, 1.0) / (32768.0 ** 2))
+
+
+def _ease_seam_levels(
+    paths: Sequence[Path],
+    trigger_db: float = 3.0,
+    allow_db: float = 2.0,
+    cap_db: float = 6.0,
+    span_s: float = 12.0,
+) -> None:
+    """Tame a take that opens hotter than the voice it follows.
+
+    The b0010 lesson: a take can open several dB louder and a third faster
+    than the voice around it while its pitch stays perfectly normal, and a
+    level jump at a splice reads as a new announcer just as surely as a pitch
+    jump does. Whole-take loudness matching was tried long ago and made seams
+    worse, and a "hot window anywhere" detector false-positives on ordinary
+    emphasis in most takes — so this is strictly seam-local: only a take's
+    opening, only relative to the take it follows, and only downward.
+
+    Correction is pure gain — multiplication, no re-synthesis, none of the
+    phase-vocoder risk that made earlier DSP the artifact. The attenuation
+    follows the excess for as long as it persists (b0010 stayed hot for ten
+    seconds) and releases once the take settles toward its own body level,
+    which also bounds the correction: the opening is never pushed below how
+    the take itself speaks once calm.
+    """
+    if os.getenv("TTS_SEAM_LEVEL", "1").strip().lower() in ("0", "false", "no"):
+        return
+    if len(paths) < 2:
+        return
+    import array as _array
+    import wave as _wave
+
+    eased = []
+    for i in range(1, len(paths)):
+        tail = _level_db(paths[i - 1], -1.5)
+        head = _level_db(paths[i], 0.0, 1.5)
+        body = _level_db(paths[i])
+        if tail is None or head is None or body is None:
+            continue
+        if head - tail <= trigger_db:
+            continue
+        # Aim just above the previous take's close; never meaningfully below
+        # how this take itself speaks once settled.
+        target = max(tail + allow_db, body - 0.5)
+
+        with _wave.open(str(paths[i]), "rb") as fh:
+            sr = fh.getframerate()
+            params = fh.getparams()
+            pcm = _array.array("h")
+            pcm.frombytes(fh.readframes(fh.getnframes()))
+
+        hop = 0.25
+        span = min(span_s, len(pcm) / sr)
+        att: List[float] = []
+        calm = 0
+        prev = 0.0
+        t = 0.0
+        while t < span:
+            lv = _level_db(paths[i], t, 0.5)
+            if lv is None or lv < target - 8:
+                # A pause carries no level information; holding the previous
+                # attenuation avoids pumping the gain across every gap — and a
+                # pause is NOT evidence the voice has settled, which is the
+                # mistake that made the first version stop tracking two
+                # seconds into a ten-second-hot opening.
+                att.append(prev)
+            else:
+                excess = min(max(lv - target, 0.0), cap_db)
+                att.append(excess)
+                prev = excess
+                calm = calm + 1 if excess < 1.0 else 0
+                if calm >= 6:  # a sustained calm stretch of speech: done
+                    break
+            t += hop
+        while att and att[-1] < 0.5:
+            att.pop()
+        if not att or max(att) < 1.0:
+            continue
+
+        # Per-sample envelope: linear between hops, then an 0.8 s release.
+        release = int(0.8 * sr)
+        env_len = int(len(att) * hop * sr)
+        for j in range(min(len(pcm), env_len + release)):
+            t_j = j / sr
+            if j < env_len:
+                pos = t_j / hop
+                k = min(int(pos), len(att) - 1)
+                frac = min(pos - k, 1.0)
+                a = att[k] + (att[min(k + 1, len(att) - 1)] - att[k]) * frac
+            else:
+                a = att[-1] * (1.0 - (j - env_len) / release)
+            if a > 0:
+                pcm[j] = int(round(pcm[j] * (10 ** (-a / 20))))
+
+        with _wave.open(str(paths[i]), "wb") as fh:
+            fh.setparams(params)
+            fh.writeframes(pcm.tobytes())
+        after = _level_db(paths[i], 0.0, 1.5)
+        eased.append((head - tail, (after - tail) if after is not None else 0.0))
+
+    if eased:
+        worst = max(eased, key=lambda x: x[0])
+        print(f"[tts] level seams: {len(eased)} eased; "
+              f"worst {worst[0]:+.1f} -> {worst[1]:+.1f} dB")
+
+
 def _median_f0(path: Path, start_s: float = 0.0, dur_s: Optional[float] = None) -> float:
     """Median voiced pitch of a clip (or a segment of it), by autocorrelation.
 
@@ -738,16 +875,21 @@ def _flatten_seams(
 
     head_fac = [1.0] * len(paths)
     tail_fac = [1.0] * len(paths)
-    eased = skipped = 0
+    eased = 0
     steps_before: List[float] = []
     for i in range(1, len(paths)):
         t_, h_, mt, mh = tails[i - 1], heads[i], med[i - 1], med[i]
         if not (t_ and h_ and mt and mh):
             continue
         steps_before.append(h_ - t_)
-        if not (0.78 <= t_ / mt <= 1.28 and 0.78 <= h_ / mh <= 1.28):
-            skipped += 1
-            continue
+        # An edge far outside its take's body is expressive delivery or a bad
+        # measurement — but skipping such seams entirely left the video's worst
+        # seam (+90 Hz) exactly as spoken, and that was the one listeners
+        # caught. Clamp the measurement to the plausible band instead: the
+        # correction acts on the believable part of the step and the factor
+        # caps below still bound how far anything can be pushed.
+        t_ = min(max(t_, 0.78 * mt), 1.28 * mt)
+        h_ = min(max(h_, 0.78 * mh), 1.28 * mh)
         excess = (h_ - t_) - target_step_hz
         if excess <= 5:
             continue
@@ -772,7 +914,7 @@ def _flatten_seams(
             for i in range(1, len(paths))
             if tails[i - 1] and heads[i]
         ]
-        print(f"[tts] seams: {eased} eased, {skipped} left as spoken (emphasis); "
+        print(f"[tts] seams: {eased} eased; "
               f"median {statistics.median(steps_before):+.0f} -> "
               f"{statistics.median(after):+.0f} Hz, "
               f"worst {max(steps_before, key=abs):+.0f} -> {max(after, key=abs):+.0f}")
@@ -1363,6 +1505,7 @@ def _ttsapi_synthesize(
     _slow_fast_takes(takes)
     _normalize_pitch([p for _, p, _ in takes])
     _flatten_seams([p for _, p, _ in takes])
+    _ease_seam_levels([p for _, p, _ in takes])
 
     # --- phase 4: align and slice ---------------------------------------
     import wave

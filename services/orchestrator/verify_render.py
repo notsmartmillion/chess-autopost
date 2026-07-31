@@ -469,26 +469,39 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
     chained = sum(1 for c in clips.values() if c.get("chain"))
     rep.info("voice", f"{chained}/{len(clips)} clips are continuous-take slices")
 
-    # Pitch drifting between takes is heard as the narrator changing tone. It is
-    # invisible in the data unless measured, so measure it.
+    # Voice consistency. "A different announcer takes over" has three separate
+    # causes, and a render has shipped with each of them while the audit
+    # measured only the first: a PITCH step at a take seam, a LEVEL jump at a
+    # take seam (b0010 opened +5 dB with perfectly normal pitch), and a beat
+    # spoken far faster or louder than its surroundings. So all three are
+    # measured, at the two granularities they live at — the seam, and the
+    # beat against its neighbourhood — and every finding carries a timestamp,
+    # because a warning nobody can locate in the video never gets checked.
     try:
         sys.path.insert(0, str(ROOT / "services" / "orchestrator"))
-        from tts import _median_f0  # noqa: PLC0415
+        from tts import _level_db, _median_f0  # noqa: PLC0415
 
-        groups: Dict[Any, List[str]] = collections.OrderedDict()
+        # Beat start times on the final timeline, for reporting.
+        at_ms: Dict[str, int] = {}
+        cursor = 0
         for beat in beats:
-            if clips.get(beat["id"]):
-                groups.setdefault(beat.get("para"), []).append(beat["id"])
+            at_ms[beat["id"]] = cursor
+            cursor += int(beat.get("durationMs") or 0)
+
+        def ts(beat_id: str) -> str:
+            t = at_ms.get(beat_id, 0) // 1000
+            return f"{t // 60}:{t % 60:02d}"
+
         # Reconstruct TAKES, not paragraphs: merging means several breath
         # groups share one synthesis request, and a take ends where a clip is
-        # not chained. Both failure modes live here — take-to-take drift
-        # (medians apart) and the seam step (a falling cadence into a fresh
-        # attack), which is the one heard as the announcer being swapped.
+        # not chained.
         import tempfile
 
         take_files: List[Path] = []
+        take_first: List[str] = []
         frames = b""
         params = None
+        first_id: Optional[str] = None
         for beat in beats:
             clip = clips.get(beat["id"])
             if not clip:
@@ -496,6 +509,7 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
             path = OUT / "audio" / clip["file"]
             if not path.exists():
                 continue
+            first_id = first_id or beat["id"]
             with wave.open(str(path), "rb") as fh:
                 params = params or fh.getparams()
                 frames += fh.readframes(fh.getnframes())
@@ -506,7 +520,9 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                     fh.setparams(params)
                     fh.writeframes(frames)
                 take_files.append(joined)
+                take_first.append(first_id)
                 frames = b""
+                first_id = None
         try:
             f0s = [f for f in (_median_f0(p) for p in take_files) if f]
             if len(f0s) >= 4:
@@ -517,30 +533,80 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                                   f"(IQR {iqr:.1f})")
                 if iqr > 8:
                     rep.warn("voice", f"pitch IQR {iqr:.1f} Hz — take medians drift audibly")
-            steps = []
-            for a, b in zip(take_files, take_files[1:]):
-                tail = _median_f0(a, -0.6)
-                head = _median_f0(b, 0.0, 0.6)
-                if tail and head:
-                    steps.append(head - tail)
-            if steps:
-                steps_abs = sorted(steps, key=abs, reverse=True)
-                med = sorted(steps)[len(steps) // 2]
-                rep.info("voice", f"seam pitch step median {med:+.0f} Hz, "
-                                  f"worst {steps_abs[0]:+.0f} across {len(steps)} seams")
-                if abs(med) > 25 or abs(steps_abs[0]) > 45:
-                    # Warning, not error, while the cause lives in the TTS
-                    # service: it re-splits requests into ~450-char chunks and
-                    # samples each independently, so the cure is a seed reset
-                    # per chunk server-side, not anything this pipeline can gate
-                    # on. Re-promote once the service fix lands.
-                    rep.warn("voice", "seam steps this large are heard as a second "
-                                      "announcer taking over")
+
+            # --- seams: pitch AND level, each seam judged on both ----------
+            bad_seams, seam_rows = [], []
+            for i in range(1, len(take_files)):
+                a, b = take_files[i - 1], take_files[i]
+                p_tail, p_head = _median_f0(a, -0.6), _median_f0(b, 0.0, 0.6)
+                l_tail, l_head = _level_db(a, -1.5), _level_db(b, 0.0, 1.5)
+                dp = (p_head - p_tail) if p_tail and p_head else 0.0
+                dl = (l_head - l_tail) if l_tail is not None and l_head is not None else 0.0
+                seam_rows.append((take_first[i], dp, dl))
+                # One dimension far out, or two moderately out together — the
+                # combination is what the ear sums into "someone else".
+                if abs(dp) > 60 or abs(dl) > 5 or (abs(dp) > 40 and abs(dl) > 3):
+                    bad_seams.append(f"{ts(take_first[i])} ({dp:+.0f} Hz, {dl:+.1f} dB)")
+            if seam_rows:
+                worst_p = max(seam_rows, key=lambda r: abs(r[1]))
+                worst_l = max(seam_rows, key=lambda r: abs(r[2]))
+                rep.info("voice", f"{len(seam_rows)} seams; worst pitch "
+                                  f"{worst_p[1]:+.0f} Hz at {ts(worst_p[0])}, "
+                                  f"worst level {worst_l[2]:+.1f} dB at {ts(worst_l[0])}")
+            for s in bad_seams:
+                rep.error("voice", f"seam at {s} will be heard as a new announcer")
+            mild = [r for r in seam_rows
+                    if (abs(r[1]) > 40 or abs(r[2]) > 3)
+                    and f"{ts(r[0])}" not in " ".join(bad_seams)]
+            for r in mild:
+                rep.warn("voice", f"seam at {ts(r[0])} is noticeable "
+                                  f"({r[1]:+.0f} Hz, {r[2]:+.1f} dB)")
+
+            # --- beats against their neighbourhood -------------------------
+            # The b0010 case: one beat +5 dB louder and a third faster than
+            # everything around it, pitch normal, seam gates blind. Compare
+            # each substantial beat with the beats near it in time.
+            rows = []
+            for beat in beats:
+                clip = clips.get(beat["id"])
+                if not clip:
+                    continue
+                path = OUT / "audio" / clip["file"]
+                if not path.exists() or int(clip.get("durationMs") or 0) < 3000:
+                    continue
+                words = len(clip.get("words") or [])
+                lv = _level_db(path)
+                f0 = _median_f0(path)
+                wpm = words / (clip["durationMs"] / 60000) if words else 0.0
+                rows.append((beat["id"], at_ms[beat["id"]], f0, lv, wpm, words))
+            loud_fast = []
+            for bid, at, f0, lv, wpm, words in rows:
+                near = [r for r in rows if abs(r[1] - at) <= 30000 and r[0] != bid]
+                if len(near) < 3:
+                    continue
+                med_lv = sorted(r[3] for r in near)[len(near) // 2]
+                med_wpm = sorted(r[4] for r in near)[len(near) // 2]
+                med_f0 = sorted(r[2] for r in near)[len(near) // 2]
+                hot = lv is not None and med_lv is not None and lv - med_lv > 3.5
+                fast = words >= 15 and med_wpm and wpm / med_wpm > 1.30
+                sharp = f0 and med_f0 and abs(f0 / med_f0 - 1.0) > 0.12
+                if hot and fast:
+                    rep.error("voice", f"{bid} at {ts(bid)} is spoken "
+                                       f"{lv - med_lv:+.1f} dB and "
+                                       f"{(wpm / med_wpm - 1) * 100:+.0f}% wpm against "
+                                       "its surroundings — a different read")
+                    loud_fast.append(bid)
+                elif hot or fast or sharp:
+                    what = ("louder" if hot else "faster" if fast else "sharper")
+                    rep.warn("voice", f"{bid} at {ts(bid)} is noticeably {what} "
+                                      "than its surroundings")
+            if not bad_seams and not loud_fast:
+                rep.info("voice", "no seam or beat stands out in pitch, level or pace")
         finally:
             for p in take_files:
                 p.unlink(missing_ok=True)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        rep.warn("voice", f"consistency scan did not complete ({exc})")
 
 
 def check_cues(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -> None:

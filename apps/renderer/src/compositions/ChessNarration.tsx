@@ -146,22 +146,25 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
     return intros.length ? intros[intros.length - 1].id : null;
   }, [beats]);
 
-  // Two subscribe prompts. The first once the viewer has committed to the game
-  // — early enough to matter, late enough not to be an ad before the content.
-  // The second over the sign-off, where asking is expected. Both are skipped
-  // if the video is too short to hold them apart.
+  // Subscribe prompts: once the viewer has committed to the game, once in the
+  // middle, once over the sign-off where asking is expected. Six seconds each
+  // — two five-second showings proved short enough that the channel's own
+  // maker watched the video twice without registering one. Appearances that
+  // would crowd each other are dropped rather than squeezed.
   const subscribeAt: number[] = useMemo(() => {
     const total = segments.length
       ? segments[segments.length - 1].from + segments[segments.length - 1].durationInFrames
       : 0;
     const outro = segments.find((s) => s.beat.kind === 'outro');
     const first = Math.round(fps * 75);
-    const second = outro
+    const mid = Math.round(total * 0.55);
+    const last = outro
       ? outro.from + Math.round(outro.durationInFrames * 0.35)
       : total - Math.round(fps * 14);
     const out: number[] = [];
-    if (second - first > fps * 30) out.push(first);
-    if (second > first) out.push(second);
+    if (last - first > fps * 30) out.push(first);
+    if (mid - first > fps * 60 && last - mid > fps * 60) out.push(mid);
+    if (last > first) out.push(last);
     return out;
   }, [segments, fps]);
 
@@ -431,7 +434,7 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           and again under the sign-off. Never during the intro cards, which
           are already carrying text. */}
       {subscribeAt.map((at, i) => (
-        <SubscribeBadge key={`sub-${i}`} startFrame={at} holdFrames={fps * 5} />
+        <SubscribeBadge key={`sub-${i}`} startFrame={at} holdFrames={fps * 6} />
       ))}
 
       {/* Narration audio, one clip per beat */}

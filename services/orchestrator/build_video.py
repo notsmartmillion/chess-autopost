@@ -169,6 +169,52 @@ _PAUSE_CUE = re.compile(
 )
 
 
+def _named_video_copy(script: Dict[str, Any]) -> Optional[Path]:
+    """Copy the finished render to outputs/videos/{White}-v-{Black}-{year}.mp4.
+
+    Surnames only — "Mamedyarov-v-Carlsen-2015.mp4" is what a human scans a
+    folder for. The thumbnail travels under the same stem so the pair stays
+    together. Best effort: a naming problem must never fail a finished build.
+    """
+    try:
+        meta = script.get("meta") or {}
+
+        def surname(raw: Optional[str]) -> str:
+            name = (raw or "").strip()
+            if not name or set(name) <= {"?", "."}:
+                return "Unknown"
+            part = name.split(",")[0].strip() if "," in name else name.split()[-1]
+            return re.sub(r"[^A-Za-z0-9]", "", part) or "Unknown"
+
+        year = ""
+        m = re.match(r"(\d{4})", (meta.get("date") or "").strip())
+        if m:
+            year = m.group(1)
+        stem = f"{surname(meta.get('white'))}-v-{surname(meta.get('black'))}"
+        stem += f"-{year}" if year else ""
+
+        src = ROOT / "apps" / "renderer" / "out" / "video.mp4"
+        if not src.exists():
+            return None
+        lib = OUT / "videos"
+        lib.mkdir(parents=True, exist_ok=True)
+        dest = lib / f"{stem}.mp4"
+        # Same pairing twice (a re-render, or a rematch year unknown): keep
+        # both, numbered — the point of this file is that nothing overwrites.
+        n = 2
+        while dest.exists():
+            dest = lib / f"{stem}-{n}.mp4"
+            n += 1
+        shutil.copy2(src, dest)
+        thumb = ROOT / "apps" / "renderer" / "out" / "thumbnail.png"
+        if thumb.exists():
+            shutil.copy2(thumb, dest.with_suffix(".png"))
+        return dest
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] library copy failed ({exc})")
+        return None
+
+
 def apply_think_pauses(
     script: Dict[str, Any], manifest: Dict[str, Any], pause_ms: int = 5000, limit: int = 2
 ) -> int:
@@ -346,6 +392,13 @@ def render(renderer_dir: Path, total_ms: int) -> None:
     print(f"[render] rendering ~{minutes:.1f} minutes of video…")
     subprocess.check_call([npm, "run", "render"], cwd=str(renderer_dir))
     print("[ok] render complete -> apps/renderer/out/video.mp4")
+
+    # Keep a per-game copy so the next build cannot overwrite this one.
+    # video.mp4 stays in place as the canonical path the uploader and the
+    # daily flow read; the named file is the human-facing library.
+    named = _named_video_copy(script)
+    if named:
+        print(f"[ok] library copy -> {named.relative_to(ROOT)}")
 
 
 def parse_args() -> argparse.Namespace:

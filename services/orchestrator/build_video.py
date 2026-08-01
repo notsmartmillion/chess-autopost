@@ -399,6 +399,15 @@ def render(renderer_dir: Path, total_ms: int, script: Dict[str, Any]) -> None:
     named = _named_video_copy(script)
     if named:
         print(f"[ok] library copy -> {named.relative_to(ROOT)}")
+        # Captions travel with the video: YouTube's own transcription has
+        # never heard this audio and mangles square names into words.
+        try:
+            subprocess.check_call(
+                [sys.executable, str(Path(__file__).parent / "make_captions.py"),
+                 "--out", str(named.with_suffix(".srt"))]
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] captions not written ({exc})")
 
 
 def parse_args() -> argparse.Namespace:

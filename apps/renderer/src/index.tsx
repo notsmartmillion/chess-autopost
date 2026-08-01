@@ -2,6 +2,7 @@
 import {Composition, registerRoot, staticFile, CalculateMetadataFunction} from 'remotion';
 import {ChessNarration, ChessNarrationProps} from './compositions/ChessNarration';
 import {Thumbnail, ThumbnailProps} from './compositions/Thumbnail';
+import {ChannelWatermark, ChannelBanner} from './compositions/ChannelArt';
 import type {Script} from './types/script';
 
 const FPS = 30;
@@ -49,6 +50,22 @@ registerRoot(() => {
         height={1080}
         calculateMetadata={calculateMetadata}
         defaultProps={{audioBase: '/audio'}}
+      />
+      <Composition
+        id="ChannelWatermark"
+        component={ChannelWatermark}
+        durationInFrames={1}
+        fps={FPS}
+        width={150}
+        height={150}
+      />
+      <Composition
+        id="ChannelBanner"
+        component={ChannelBanner}
+        durationInFrames={1}
+        fps={FPS}
+        width={2048}
+        height={1152}
       />
       <Composition
         id="Thumbnail"

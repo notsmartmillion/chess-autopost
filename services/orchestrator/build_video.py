@@ -170,11 +170,20 @@ _PAUSE_CUE = re.compile(
 
 
 def _named_video_copy(script: Dict[str, Any]) -> Optional[Path]:
-    """Copy the finished render to outputs/videos/{White}-v-{Black}-{year}.mp4.
+    """Copy the finished render to its own folder under outputs/videos/.
 
-    Surnames only — "Mamedyarov-v-Carlsen-2015.mp4" is what a human scans a
-    folder for. The thumbnail travels under the same stem so the pair stays
-    together. Best effort: a naming problem must never fail a finished build.
+        outputs/videos/Geller-v-Keres-1953/
+            Geller-v-Keres-1953.mp4
+            Geller-v-Keres-1953.png
+            Geller-v-Keres-1953.srt
+
+    One folder per game, because uploading means picking up three files that
+    belong together and a flat directory interleaves them across every video
+    ever made. The files keep the descriptive stem rather than becoming
+    video/thumbnail/captions: a file dragged out of its folder should still
+    say what it is.
+
+    Best effort: a naming problem must never fail a finished build.
     """
     try:
         meta = script.get("meta") or {}
@@ -197,14 +206,16 @@ def _named_video_copy(script: Dict[str, Any]) -> Optional[Path]:
         if not src.exists():
             return None
         lib = OUT / "videos"
-        lib.mkdir(parents=True, exist_ok=True)
-        dest = lib / f"{stem}.mp4"
-        # Same pairing twice (a re-render, or a rematch year unknown): keep
-        # both, numbered — the point of this file is that nothing overwrites.
+        # Same pairing twice (a re-render, or a rematch whose year is unknown):
+        # keep both in numbered folders — the point of this copy is that
+        # nothing overwrites.
+        folder = lib / stem
         n = 2
-        while dest.exists():
-            dest = lib / f"{stem}-{n}.mp4"
+        while folder.exists():
+            folder = lib / f"{stem}-{n}"
             n += 1
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / f"{folder.name}.mp4"
         shutil.copy2(src, dest)
         thumb = ROOT / "apps" / "renderer" / "out" / "thumbnail.png"
         if thumb.exists():

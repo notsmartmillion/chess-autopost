@@ -145,15 +145,41 @@ def record_publication(entry: Dict) -> None:
     LEDGER_FILE.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
 
 
-def archive_video(pgn_path: Path) -> Optional[Path]:
-    """Keep a dated copy of the render.
+def _newest_library_copy() -> Optional[Path]:
+    """The per-game copy build_video just filed, if it is genuinely this run's.
 
-    Remotion writes out/video.mp4 with --overwrite, so without this the next
-    day's run destroys today's video. That matters when an upload fails: the
-    video would otherwise be unrecoverable.
+    Matched by content size against the render on disk rather than by name:
+    the folder is named after the players, and this function has only the PGN
+    path, so a name match would be a second implementation of the same rule.
+    """
+    if not VIDEO_ARCHIVE.exists() or not VIDEO_PATH.exists():
+        return None
+    size = VIDEO_PATH.stat().st_size
+    for mp4 in VIDEO_ARCHIVE.glob("*/*.mp4"):
+        try:
+            if mp4.stat().st_size == size:
+                return mp4
+        except OSError:
+            continue
+    return None
+
+
+def archive_video(pgn_path: Path) -> Optional[Path]:
+    """Keep a copy of the render that tomorrow's build cannot overwrite.
+
+    Remotion writes out/video.mp4 with --overwrite, so without a copy the next
+    day's run destroys today's video — which matters when an upload fails.
+
+    build_video.py now files each render in its own folder under
+    outputs/videos/, which serves the same purpose. When it has already done
+    so, this stands down rather than leaving a second, differently-named copy
+    of every game loose in the library.
     """
     if not VIDEO_PATH.exists():
         return None
+    newest = _newest_library_copy()
+    if newest is not None:
+        return newest
     VIDEO_ARCHIVE.mkdir(parents=True, exist_ok=True)
     dest = VIDEO_ARCHIVE / f"{pgn_path.stem}.mp4"
     try:

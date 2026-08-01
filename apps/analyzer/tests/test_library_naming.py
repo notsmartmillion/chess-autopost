@@ -39,8 +39,10 @@ def test_naming_uses_surnames_and_year(tmp_path, monkeypatch):
                        "date": "1953.??.??"}}
     dest = build_video._named_video_copy(script)
     assert dest is not None
+    # One folder per game, with the files keeping the descriptive stem so a
+    # file dragged out of its folder still says what it is.
+    assert dest.parent.name == "Geller-v-Keres-1953"
     assert dest.name == "Geller-v-Keres-1953.mp4"
-    # The thumbnail travels under the same stem, so the pair stays together.
     assert dest.with_suffix(".png").exists()
 
 
@@ -55,8 +57,8 @@ def test_naming_never_overwrites(tmp_path, monkeypatch):
                        "date": "1960.03.15"}}
     first = build_video._named_video_copy(script)
     second = build_video._named_video_copy(script)
-    assert first.name == "Tal-v-Botvinnik-1960.mp4"
-    assert second.name == "Tal-v-Botvinnik-1960-2.mp4"
+    assert first.parent.name == "Tal-v-Botvinnik-1960"
+    assert second.parent.name == "Tal-v-Botvinnik-1960-2"
     assert first.exists() and second.exists()
 
 
@@ -68,4 +70,4 @@ def test_naming_survives_unknown_players(tmp_path, monkeypatch):
     (real / "video.mp4").write_bytes(b"video")
 
     dest = build_video._named_video_copy({"meta": {"white": "?", "black": None}})
-    assert dest is not None and dest.name.startswith("Unknown-v-Unknown")
+    assert dest is not None and dest.parent.name.startswith("Unknown-v-Unknown")

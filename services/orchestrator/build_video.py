@@ -365,7 +365,7 @@ def sync_to_public(script: Dict[str, Any], manifest: Dict[str, Any]) -> None:
     print(f"[ok] synced script.json + {len(manifest.get('clips') or {})} clips to renderer/public")
 
 
-def render(renderer_dir: Path, total_ms: int) -> None:
+def render(renderer_dir: Path, total_ms: int, script: Dict[str, Any]) -> None:
     npm = shutil.which("npm") or shutil.which("npm.cmd") or shutil.which("npm.exe")
     if not npm:
         raise FileNotFoundError("npm not found in PATH. Install Node.js first.")
@@ -590,7 +590,7 @@ def main() -> int:
         print("[ok] assets written; skipping render (--no-render)")
         return 0
 
-    render(ROOT / "apps" / "renderer", total_ms)
+    render(ROOT / "apps" / "renderer", total_ms, script)
     return 0
 
 

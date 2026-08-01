@@ -615,7 +615,7 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                     what = ("louder" if hot else "faster" if fast else "sharper")
                     rep.warn("voice", f"{bid} at {ts(bid)} is noticeably {what} "
                                       "than its surroundings")
-            if not bad_seams and not loud_fast:
+            if not bad_seams and not loud_fast and not mild:
                 rep.info("voice", "no seam or beat stands out in pitch, level or pace")
         finally:
             for p in take_files:

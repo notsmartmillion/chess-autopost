@@ -76,6 +76,12 @@ SPOKEN_BANS: List[Tuple[str, str]] = [
     # No blanket ban on "the king has to move": that sentence is *correct* when
     # the engine says it is, and check_narration cross-checks each one against
     # checkEvasions. A pattern match here only duplicated that as noise.
+    #
+    # A lower-case a-file square is read as the English article: transcribing
+    # the synthesised audio, "a4" comes back as "a 4" while "A4" comes back as
+    # "a4", the same as an explicit "ay four". The director capitalises these,
+    # so any that survive to the script mean that pass did not run.
+    ("un-capitalised a-file square", r"(?<![A-Za-z0-9])a[1-8](?![a-z0-9])"),
 ]
 
 

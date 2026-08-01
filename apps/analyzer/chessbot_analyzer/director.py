@@ -1887,6 +1887,9 @@ def build_script(
             repaired = _fix_leading_squares(script["beats"])
             if repaired:
                 logger.info(f"Repaired {repaired} beat(s) opening on a bare square")
+            capped = _capitalise_a_file(script["beats"])
+            if capped:
+                logger.info(f"Capitalised {capped} a-file square(s) for the voice")
             _reflow_paragraphs(script["beats"])
             logger.info("Narration: LLM")
         else:
@@ -1928,6 +1931,30 @@ def apply_signoff(beats: List[Dict[str, Any]], signoff: str) -> None:
         body = _MODEL_SIGNOFF.sub(" ", beat.get("text") or "").strip()
         body = re.sub(r"\s{2,}", " ", body)
         beat["text"] = f"{body} {signoff}".strip() if body else signoff
+
+
+# "a4" written in lower case is read as the article: "uh four", not "ay four".
+# The a-file is the only one this happens to, because "a" is the only file
+# letter that is also an English word. Capitalising it fixes the reading —
+# transcribing the synthesised audio, lower-case "a4" comes back as "a 4"
+# while "A4" comes back as "a4", the same as an explicit "ay four" and the
+# same shape as "c4".
+#
+# A word boundary on the left keeps "Na4" and "Rxa4" alone; those already read
+# correctly because the letter before the "a" stops it looking like an article.
+_A_FILE_SQUARE = re.compile(r"(?<![A-Za-z0-9])a([1-8])(?![a-z0-9])")
+
+
+def _capitalise_a_file(beats: List[Dict[str, Any]]) -> int:
+    """Spell a-file squares with a capital A, so they are spoken as a letter."""
+    fixed = 0
+    for beat in beats:
+        text = beat.get("text") or ""
+        new = _A_FILE_SQUARE.sub(lambda m: "A" + m.group(1), text)
+        if new != text:
+            fixed += len(_A_FILE_SQUARE.findall(text))
+            beat["text"] = new
+    return fixed
 
 
 def _fix_leading_squares(beats: List[Dict[str, Any]]) -> int:

@@ -31,6 +31,8 @@ MAX_CHARS = 74          # two comfortable lines at YouTube's default size
 MAX_SECONDS = 5.5
 MAX_GAP = 0.8           # a pause this long ends the cue, wherever it falls
 
+_A_FILE_CAPS = re.compile(r"(?<![A-Za-z0-9])A([1-8])(?![a-z0-9])")
+
 
 def _fmt(t: float) -> str:
     if t < 0:
@@ -62,7 +64,11 @@ def _cased_words(text: str, aligned: List[Dict[str, Any]]) -> List[str]:
                 picked = src[j]
                 i = j + 1
                 break
-        out.append(picked if picked is not None else (w.get("w") or ""))
+        word = picked if picked is not None else (w.get("w") or "")
+        # The a-file is capitalised in the narration so the voice says "ay
+        # four" rather than the article — but algebraic notation is written in
+        # lower case, so the reader gets it back the conventional way.
+        out.append(_A_FILE_CAPS.sub(lambda m: "a" + m.group(1), word))
     return out
 
 

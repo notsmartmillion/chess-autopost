@@ -79,5 +79,16 @@
     "narration": "llm",
     "title": "He Threw a Piece at Carlsen \u2014 and Resigned Three Moves Later",
     "status": "not_uploaded"
+  },
+  {
+    "date": "2026-08-01",
+    "pgn": "2026-08-01_Rubinstein_vs_Mieses.pgn",
+    "archive": "Rubinstein-v-Mieses-1928.mp4",
+    "sizeMb": 43.4,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "A Knight Left Hanging for Six Moves \u2014 Then Rubinstein Took It",
+    "status": "not_uploaded"
   }
 ]

@@ -45,10 +45,13 @@ const RAIL_HALF = (RAIL_BOTTOM - RAIL_TOP - RAIL_GAP) / 2;
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 // Chess annotation marks, in the conventional colours. Deliberately only the
-// notable qualities: a badge on every move is a badge on none.
+// notable qualities: a badge on every move is a badge on none. "Good" and
+// "book" are most of any game and carry no information; an inaccuracy is not
+// interesting enough to interrupt the board for.
 const BADGE: Record<string, {symbol: string; color: string}> = {
   brilliant: {symbol: '!!', color: '#3ddc97'},
   great: {symbol: '!', color: '#5ac8fa'},
+  best: {symbol: '★', color: '#5ac8fa'},
   mistake: {symbol: '?', color: '#ff8c42'},
   blunder: {symbol: '??', color: '#ff5d5d'},
 };
@@ -201,10 +204,23 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
 
   // Only the moves worth marking get a sticker on the board. "Good" and "best"
   // are most of the game — badging them would make the mark meaningless.
-  const moveBadge =
-    beat.move && !beat.branch && beat.tag && BADGE[beat.tag]
-      ? {square: beat.move.to, ...BADGE[beat.tag]}
-      : null;
+  // Variation beats carry no quality tag — nothing was played, so nothing can
+  // be graded. But the first move of a branch IS the engine's recommendation,
+  // which is the whole reason the branch is on screen, so it gets the same
+  // star a best move gets in the real game.
+  const branchStart =
+    beat.branch && beat.move
+      ? !segments.some(
+          (s) => s.beat.branch && s.beat.label === beat.label && s.from < (current?.from ?? 0)
+        )
+      : false;
+  const moveBadge = beat.move
+    ? branchStart
+      ? {square: beat.move.to, ...BADGE.best}
+      : !beat.branch && beat.tag && BADGE[beat.tag]
+        ? {square: beat.move.to, ...BADGE[beat.tag]}
+        : null
+    : null;
 
   // The rail must never run ahead of the narrator, and never fall behind the
   // game either. It always describes the last REAL move the viewer has seen

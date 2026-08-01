@@ -419,6 +419,17 @@ def render(renderer_dir: Path, total_ms: int, script: Dict[str, Any]) -> None:
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[warn] captions not written ({exc})")
+        # The listing text, beside the video it belongs to. The uploader
+        # generates this itself when posting through the API — this file is
+        # for the manual path, so the title and description can be copied
+        # without hunting for where they came from.
+        try:
+            subprocess.check_call(
+                [sys.executable, str(Path(__file__).parent / "write_listing.py"),
+                 "--out", str(named.with_suffix(".txt"))]
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] listing not written ({exc})")
 
 
 def parse_args() -> argparse.Namespace:

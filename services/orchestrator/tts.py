@@ -47,7 +47,14 @@ _WORD_STRIP = re.compile(r"^[^\w#+=-]+|[^\w#+=-]+$")
 # How many words one synthesis request may cover. Deliberately far above the
 # director's writing budget: breath groups are about how the script is written,
 # takes are about how few times the voice restarts.
-SYNTH_WORD_BUDGET = 170
+#
+# Every take boundary is a chance for the voice to shift, so the seam count is
+# the thing to minimise — and it rises with script length. Pushing videos
+# toward eight minutes took one script from 1157 words to 1735, which at 170
+# meant 13 takes and 12 seams, and four of those seams failed the audit. The
+# service was measured handling 455 words in a single request at normal pace
+# before this was raised, so 320 leaves real headroom.
+SYNTH_WORD_BUDGET = 320
 
 # Spoken in front of the video's first take and cut away, exactly like the
 # primers between takes: the model warms into its register before the words
@@ -555,7 +562,7 @@ def _level_db(path: Path, start_s: float = 0.0, dur_s: Optional[float] = None) -
 
 
 def _trim_loud_takes(paths: Sequence[Path], over_db: float = 2.5, cap_db: float = 4.0) -> None:
-    """Bring a take that is loud THROUGHOUT back toward the video's level.
+    """Bring a take that is loud or quiet THROUGHOUT toward the video's level.
 
     The seam easing is bounded by each take's own body, deliberately — so a
     take whose whole body sits 6 dB above its neighbours sails through it,
@@ -580,22 +587,28 @@ def _trim_loud_takes(paths: Sequence[Path], over_db: float = 2.5, cap_db: float 
     med = levels[len(levels) // 2]
     trimmed = []
     for p, body in bodies:
-        if body is None or body - med <= over_db:
+        if body is None or abs(body - med) <= over_db:
             continue
-        cut = min(body - med - over_db, cap_db)
+        # Signed: positive cuts a loud take, negative lifts a quiet one. A take
+        # sitting 6 dB under the video cannot be rescued at its seam alone —
+        # the seam correction is bounded by the take's own body, so the body is
+        # what has to move.
+        sign = 1.0 if body > med else -1.0
+        cut = sign * min(abs(body - med) - over_db, cap_db)
         with _wave.open(str(p), "rb") as fh:
             params = fh.getparams()
             pcm = _array.array("h")
             pcm.frombytes(fh.readframes(fh.getnframes()))
         g = 10 ** (-cut / 20)
         for i in range(len(pcm)):
-            pcm[i] = int(round(pcm[i] * g))
+            pcm[i] = max(-32768, min(32767, int(round(pcm[i] * g))))
         with _wave.open(str(p), "wb") as fh:
             fh.setparams(params)
             fh.writeframes(pcm.tobytes())
         trimmed.append((p.stem, body - med, cut))
     for stem, over, cut in trimmed:
-        print(f"[tts] trimmed {stem}: body {over:+.1f} dB over the video, -{cut:.1f} dB")
+        print(f"[tts] levelled {stem}: body {over:+.1f} dB against the video, "
+              f"{-cut:+.1f} dB")
 
 
 def _ease_seam_levels(
@@ -605,7 +618,7 @@ def _ease_seam_levels(
     cap_db: float = 6.0,
     span_s: float = 12.0,
 ) -> None:
-    """Tame a take that opens hotter than the voice it follows.
+    """Match a take's opening level to the voice it follows, either way.
 
     The b0010 lesson: a take can open several dB louder and a third faster
     than the voice around it while its pitch stays perfectly normal, and a
@@ -613,14 +626,19 @@ def _ease_seam_levels(
     jump does. Whole-take loudness matching was tried long ago and made seams
     worse, and a "hot window anywhere" detector false-positives on ordinary
     emphasis in most takes — so this is strictly seam-local: only a take's
-    opening, only relative to the take it follows, and only downward.
+    opening, only relative to the take it follows.
+
+    Both directions, which the first version got wrong. It only attenuated hot
+    openings, so a take that opened 9.5 dB *quieter* than the previous take's
+    close sailed through untouched and the voice appeared to recede mid-video.
+    A drop is as audible as a jump, and on headphones rather more so.
 
     Correction is pure gain — multiplication, no re-synthesis, none of the
-    phase-vocoder risk that made earlier DSP the artifact. The attenuation
-    follows the excess for as long as it persists (b0010 stayed hot for ten
-    seconds) and releases once the take settles toward its own body level,
-    which also bounds the correction: the opening is never pushed below how
-    the take itself speaks once calm.
+    phase-vocoder risk that made earlier DSP the artifact. It follows the
+    discrepancy for as long as it persists (b0010 stayed hot for ten seconds)
+    and releases once the take settles toward its own body level, which also
+    bounds it: the opening is never pushed past how the take itself speaks
+    once calm, in either direction.
     """
     if os.getenv("TTS_SEAM_LEVEL", "1").strip().lower() in ("0", "false", "no"):
         return
@@ -636,11 +654,20 @@ def _ease_seam_levels(
         body = _level_db(paths[i])
         if tail is None or head is None or body is None:
             continue
-        if head - tail <= trigger_db:
+        if abs(head - tail) <= trigger_db:
             continue
-        # Aim just above the previous take's close; never meaningfully below
-        # how this take itself speaks once settled.
-        target = max(tail + allow_db, body - 0.5)
+        lifting = head < tail
+        if lifting:
+            # Bring a receding opening up toward the previous close, but never
+            # past this take's own body: the take is simply quieter, and
+            # dragging its start above its own voice would be a new artifact.
+            target = min(tail - allow_db, body + 0.5)
+            if target <= head:
+                continue
+        else:
+            # Aim just above the previous take's close; never meaningfully
+            # below how this take itself speaks once settled.
+            target = max(tail + allow_db, body - 0.5)
 
         with _wave.open(str(paths[i]), "rb") as fh:
             sr = fh.getframerate()
@@ -649,7 +676,13 @@ def _ease_seam_levels(
             pcm.frombytes(fh.readframes(fh.getnframes()))
 
         hop = 0.25
-        span = min(span_s, len(pcm) / sr)
+        # Leave the closing seconds alone: they are the tail the next seam is
+        # measured against. Takes are usually far longer than the span so this
+        # rarely binds, but it costs nothing and a short take would otherwise
+        # have its correction read back as the next seam's starting point.
+        span = min(span_s, max(0.0, len(pcm) / sr - 4.0))
+        if span < 1.0:
+            continue
         att: List[float] = []
         calm = 0
         prev = 0.0
@@ -664,16 +697,23 @@ def _ease_seam_levels(
                 # seconds into a ten-second-hot opening.
                 att.append(prev)
             else:
-                excess = min(max(lv - target, 0.0), cap_db)
+                # Signed: positive attenuates, negative lifts — but each
+                # seam only ever moves one way. Allowing both directions in a
+                # single pass let the quiet moments inside a hot opening be
+                # boosted, which widened the very seam being corrected
+                # (+5.5 -> +7.9 dB).
+                delta = lv - target
+                excess = (min(max(delta, 0.0), cap_db) if not lifting
+                          else max(min(delta, 0.0), -cap_db))
                 att.append(excess)
                 prev = excess
-                calm = calm + 1 if excess < 1.0 else 0
+                calm = calm + 1 if abs(excess) < 1.0 else 0
                 if calm >= 6:  # a sustained calm stretch of speech: done
                     break
             t += hop
-        while att and att[-1] < 0.5:
+        while att and abs(att[-1]) < 0.5:
             att.pop()
-        if not att or max(att) < 1.0:
+        if not att or max(abs(a) for a in att) < 1.0:
             continue
 
         # Per-sample envelope: linear between hops, then an 0.8 s release.
@@ -688,8 +728,11 @@ def _ease_seam_levels(
                 a = att[k] + (att[min(k + 1, len(att) - 1)] - att[k]) * frac
             else:
                 a = att[-1] * (1.0 - (j - env_len) / release)
-            if a > 0:
-                pcm[j] = int(round(pcm[j] * (10 ** (-a / 20))))
+            if a != 0:
+                # Clamped rather than wrapped: a lift near an existing peak
+                # would otherwise fold over into a click.
+                v = int(round(pcm[j] * (10 ** (-a / 20))))
+                pcm[j] = max(-32768, min(32767, v))
 
         with _wave.open(str(paths[i]), "wb") as fh:
             fh.setparams(params)

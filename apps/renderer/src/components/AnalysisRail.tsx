@@ -82,18 +82,30 @@ const PortraitPlaceholder: React.FC<{side: 'white' | 'black'}> = ({side}) => (
  * One player, as a card. Two of these sit side by side above the move, so the
  * pairing reads as a matchup rather than a list.
  */
+const WIN_GOLD = '#f2c14e';
+
 export const PlayerCard: React.FC<{
   name: string;
   side: 'white' | 'black';
   active: boolean;
   portrait?: string | null;
-}> = ({name, side, active, portrait}) => (
+  /** Set only once the game is over — before that it would spoil the result. */
+  won?: boolean;
+}> = ({name, side, active, portrait, won = false}) => (
   <div
     style={{
       flex: 1,
       minWidth: 0,
-      background: active ? 'rgba(90,200,250,0.07)' : THEME.panel,
-      border: `1px solid ${active ? 'rgba(90,200,250,0.45)' : THEME.panelEdge}`,
+      position: 'relative',
+      background: won
+        ? 'rgba(242,193,78,0.10)'
+        : active
+          ? 'rgba(90,200,250,0.07)'
+          : THEME.panel,
+      border: `1px solid ${
+        won ? `${WIN_GOLD}aa` : active ? 'rgba(90,200,250,0.45)' : THEME.panelEdge
+      }`,
+      boxShadow: won ? `0 0 34px ${WIN_GOLD}22` : undefined,
       borderRadius: 14,
       padding: '18px 16px',
       display: 'flex',
@@ -114,8 +126,10 @@ export const PlayerCard: React.FC<{
         background: '#1b222c',
         // Grayscale keeps mismatched press photos from fighting the palette;
         // the side to move comes up to full strength.
-        filter: active ? 'grayscale(1) contrast(1.05)' : 'grayscale(1) brightness(0.68)',
-        boxShadow: `inset 0 0 0 2px ${active ? 'rgba(90,200,250,0.55)' : THEME.panelEdge}`,
+        filter: won || active ? 'grayscale(1) contrast(1.05)' : 'grayscale(1) brightness(0.68)',
+        boxShadow: `inset 0 0 0 2px ${
+          won ? `${WIN_GOLD}99` : active ? 'rgba(90,200,250,0.55)' : THEME.panelEdge
+        }`,
       }}
     >
       {portrait ? (
@@ -132,7 +146,7 @@ export const PlayerCard: React.FC<{
         fontSize: 27,
         lineHeight: 1.18,
         textAlign: 'center',
-        color: active ? THEME.text : THEME.muted,
+        color: won || active ? THEME.text : THEME.muted,
         // Long names wrap rather than being cut: "Robert James Fischer" has to
         // fit a half-width card without an ellipsis eating the surname. The
         // block is two lines tall whether or not it needs them, so a wrapping
@@ -152,11 +166,11 @@ export const PlayerCard: React.FC<{
       style={{
         fontSize: 15,
         letterSpacing: 2.4,
-        color: active ? THEME.accent : THEME.muted,
+        color: won ? WIN_GOLD : active ? THEME.accent : THEME.muted,
         marginTop: 'auto',
       }}
     >
-      {side.toUpperCase()}
+      {won ? `${side.toUpperCase()}  ·  WINNER` : side.toUpperCase()}
     </div>
   </div>
 );

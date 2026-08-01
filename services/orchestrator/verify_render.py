@@ -704,6 +704,14 @@ def check_video(script: Dict[str, Any], rep: Report) -> None:
     size_mb = VIDEO.stat().st_size / 1e6
     expected_s = sum(b.get("durationMs") or 0 for b in script.get("beats") or []) / 1000
     rep.info("video", f"{size_mb:.1f} MB, script expects {expected_s/60:.1f} min")
+    # Eight minutes is where a video can carry mid-roll ads, so it is worth
+    # knowing when one lands short — but only as information. A short game
+    # honestly told is the right outcome; padding it to clear a threshold is
+    # not, and this must never read as a failure the build should have fixed.
+    if expected_s < 8 * 60:
+        rep.info("video", f"under the 8:00 mid-roll threshold by "
+                          f"{(8 * 60 - expected_s) / 60:.1f} min — fine for a "
+                          "short game, worth noting if it becomes the norm")
     if not THUMB.exists():
         rep.warn("video", "thumbnail.png is missing")
 

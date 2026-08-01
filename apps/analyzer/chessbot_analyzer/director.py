@@ -41,7 +41,7 @@ import os
 import random
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import chess
 
@@ -92,8 +92,9 @@ WORD_BUDGET = {
     "intro": 45,
     "intro_second": 30,
     # The close carries the resignation reason, the payoff of the running
-    # thread, and the sign-off — 40 words could only fit the sign-off.
-    "outro": 70,
+    # thread, one usable takeaway, and the sign-off — 40 words could only fit
+    # the sign-off.
+    "outro": 90,
     "hold": 90,
     "hold_major": 130,
     "move_book": 8,
@@ -105,6 +106,31 @@ WORD_BUDGET = {
     "variation_payoff": 30,
     "resume": 18,
 }
+
+# Measured across finished renders: spoken words per minute of *video*, so it
+# already carries the pauses between beats and the think-pause silences.
+WORDS_PER_MINUTE = 170.0
+
+# Videos of eight minutes or more can carry mid-roll ads, so that is where the
+# writing aims. Deliberately a pull and not a floor: a twenty-move miniature
+# has eight minutes of nothing to say, and padding it would cost the watch
+# time the length was supposed to earn. Growth is capped per beat, and a game
+# that is already long is never trimmed to fit.
+TARGET_MINUTES = 8.0
+
+# How far each kind of beat may be stretched beyond its natural budget, in
+# priority order. Decisive moments and variations absorb extra words well —
+# there is genuinely more to say about them. Routine moves come last and grow
+# least: "and then c5" does not improve at thirty words.
+STRETCH_ORDER: Tuple[Tuple[str, float], ...] = (
+    ("critical", 2.0),
+    ("variation", 1.7),
+    ("hold", 1.5),
+    ("notable", 1.6),
+    ("outro", 1.4),
+    ("intro", 1.5),
+    ("quiet", 1.3),
+)
 
 
 def _clean(value: Optional[str]) -> Optional[str]:
@@ -162,14 +188,17 @@ class Director:
         *,
         seed: Optional[int] = None,
         max_variation_plies: int = 4,
-        max_variations: int = 8,
+        max_variations: int = 10,
         max_holds: int = 8,
+        target_minutes: float = TARGET_MINUTES,
     ) -> None:
         self.channel_name = channel_name
         self.rng = random.Random(seed)
         self.max_variation_plies = max_variation_plies
         self.max_variations = max_variations
         self.max_holds = max_holds
+        # Set to 0 to write at natural length and let the game decide.
+        self.target_minutes = target_minutes
         self._counter = 0
         self._last_choice: Dict[str, int] = {}
         self._arrow_seen: Dict[str, int] = {}
@@ -251,6 +280,7 @@ class Director:
                     holds_used += 1
 
         beats.extend(self._outro_beats(meta, summary, facts))
+        self._stretch_toward_target(beats)
         self._assign_paragraphs(beats)
 
         # Seeded on the pairing so a given game always draws the same quote:
@@ -272,6 +302,7 @@ class Director:
                 **meta,
                 "channel": self.channel_name,
                 "opening": facts.get("opening"),
+                "outcome": meta.get("outcome"),
                 "quote": quote,
             },
             "beats": beats,
@@ -482,6 +513,73 @@ class Director:
             moveCueWords=self._cue_words(ply),
             targetWords=self._move_word_budget(ply, key_moment),
         )
+
+    def _stretch_class(self, beat: Dict[str, Any]) -> str:
+        """Which stretch bucket a beat belongs to."""
+        kind = beat.get("kind")
+        if kind in ("intro", "outro", "hold"):
+            return kind
+        if beat.get("branch") or kind in ("variation", "resume"):
+            return "variation"
+        words = int(beat.get("targetWords") or 0)
+        if words >= WORD_BUDGET["move_critical"]:
+            return "critical"
+        if words >= WORD_BUDGET["move_notable"]:
+            return "notable"
+        return "quiet"
+
+    def _stretch_toward_target(self, beats: List[Dict[str, Any]]) -> None:
+        """Grow the writing budget toward TARGET_MINUTES, where there is more
+        to say.
+
+        Eight minutes is where a video can carry mid-roll ads, so it is worth
+        aiming at — but only by giving the moments that deserve it more room.
+        The alternative levers are worse: slowing the voice reintroduces the
+        stretching artifacts that took a day to remove, and padding routine
+        moves trades watch time for duration, which loses the thing the length
+        was meant to earn.
+
+        So this is a pull, not a floor. Growth is capped per bucket, decisive
+        moments and variations go first, routine moves grow least and last,
+        and a game with genuinely little to say simply stays short.
+        """
+        if not self.target_minutes:
+            return
+        spoken = [b for b in beats if b.get("targetWords")]
+        if not spoken:
+            return
+        total = sum(int(b["targetWords"]) for b in spoken)
+        want = int(self.target_minutes * WORDS_PER_MINUTE)
+        if total >= want:
+            return  # already long enough; never trimmed to fit
+
+        deficit = want - total
+        for bucket, cap in STRETCH_ORDER:
+            group = [b for b in spoken if self._stretch_class(b) == bucket]
+            if not group or deficit <= 0:
+                continue
+            headroom = sum(
+                int(int(b["targetWords"]) * (cap - 1.0)) for b in group
+            )
+            if headroom <= 0:
+                continue
+            # Take the whole bucket's headroom, or the share still needed.
+            share = min(deficit, headroom)
+            for b in group:
+                room = int(int(b["targetWords"]) * (cap - 1.0))
+                if room <= 0:
+                    continue
+                add = int(round(share * room / headroom))
+                b["targetWords"] = int(b["targetWords"]) + add
+                deficit -= add
+        grown = sum(int(b["targetWords"]) for b in spoken)
+        if grown != total:
+            logger.info(
+                "director: writing budget %d -> %d words "
+                "(~%.1f -> ~%.1f min, aiming at %.1f)",
+                total, grown, total / WORDS_PER_MINUTE,
+                grown / WORDS_PER_MINUTE, self.target_minutes,
+            )
 
     def _move_word_budget(
         self, ply: Dict[str, Any], key_moment: Optional[Dict[str, Any]]
@@ -1472,14 +1570,20 @@ OTHER RULES:
 - For 'resume' beats, come back to reality with contrast: "but that is not what happened."
 - For 'hold' beats, do not announce a move — nothing moves on screen during them.
 - THE ENDING. The outro is the last thing anyone hears, so do not spend it on
-  admin. Two things only, in order: say why the loser stopped — the concrete
-  reason, a piece down with a king in the open, not "he was worse"; then land
-  the thread you have been running all video, so the finish pays off the opening
+  admin. Say plainly how the game ended, using the "endedBy" field given to
+  you and nothing else — a game that ended in resignation was NOT checkmated,
+  and inventing a mate that never happened is the single most visible error
+  this channel can make. Then three things, in order: say why the loser stopped — the concrete
+  reason, a piece down with a king in the open, not "he was worse"; land the
+  thread you have been running all video, so the finish pays off the opening
   promise ("one pinned knight decided the whole thing, and it never moved a
-  square"). Then STOP. Write no sign-off, no thanks, no farewell, no mention of
+  square"); then give the viewer ONE thing they can use in their own games,
+  drawn from this game specifically and stated as an idea rather than a rule
+  ("a pin is only worth keeping while the pinned piece has nothing better to
+  do"). Then STOP. Write no sign-off, no thanks, no farewell, no mention of
   subscribing: the channel's own closing line is appended automatically after
   your words, and anything of the kind from you only duplicates it. Do not recap
-  the move order, and do not add a moral about chess in general.
+  the move order, and do not add a general moral about chess.
 - You can see the whole game: build across it. What you set up in minute one should pay
   off in the finale.
 
@@ -1648,6 +1752,10 @@ def narrate_with_llm(
         "event": _clean(meta.get("event")),
         "date": _clean(meta.get("date")),
         "result": _clean(meta.get("result")),
+        # How it ended, not just who won. Without this the model has only
+        # "0-1" and guesses between mate and resignation — and it guesses
+        # "checkmate" for games that ended with a handshake.
+        "endedBy": (meta.get("outcome") or {}).get("text"),
         "opening": (meta.get("opening") or {}).get("name") if isinstance(meta.get("opening"), dict) else None,
         "plyCount": summary.get("plyCount"),
         "blunders": len(summary.get("blunders") or []),

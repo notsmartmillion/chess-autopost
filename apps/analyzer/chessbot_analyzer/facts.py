@@ -866,6 +866,54 @@ def _parse_book_moves(text: str) -> Tuple[str, ...]:
     return tuple(t for t in tokens if t)
 
 
+def _describe_outcome(
+    headers: Any, plies: List[Dict[str, Any]], final_board: Any
+) -> Dict[str, Any]:
+    """How the game actually ended, not just who won.
+
+    A result token says "0-1" and nothing else, but the two ways to reach it
+    feel completely different to a viewer: a king mated on the board, or a
+    player quietly stopping the clock. The narration and the closing card both
+    want to say which, so it is worked out once here from evidence rather than
+    guessed twice downstream.
+
+    Resignation is an inference, not an observation — PGN records the score,
+    not the gesture — so it is only claimed when the game ends decisively in a
+    position that is not mate. A Termination header, when present, overrides.
+    """
+    result = (headers.get("Result") or "").strip()
+    winner = {"1-0": "white", "0-1": "black"}.get(result)
+    last = plies[-1] if plies else {}
+    termination = (headers.get("Termination") or "").strip().lower()
+
+    def out(kind: str, text: str) -> Dict[str, Any]:
+        return {"type": kind, "winner": winner, "text": text}
+
+    side = (winner or "").capitalize() or "The winner"
+    loser = {"white": "Black", "black": "White"}.get(winner or "", "the opponent")
+
+    if last.get("isMate"):
+        return out("checkmate", f"{side} wins by checkmate")
+    if "time" in termination:
+        return out("timeout", f"{loser} lost on time")
+    if "abandon" in termination:
+        return out("abandoned", f"{loser} abandoned the game")
+    if winner:
+        return out("resignation", f"{loser} resigned")
+    try:
+        if final_board.is_stalemate():
+            return out("stalemate", "Drawn by stalemate")
+        if final_board.is_insufficient_material():
+            return out("insufficient", "Drawn — insufficient material")
+        if final_board.is_fivefold_repetition():
+            return out("repetition", "Drawn by repetition")
+    except Exception:  # noqa: BLE001 - board state is advisory here
+        pass
+    if result == "1/2-1/2":
+        return out("draw", "Game drawn")
+    return out("unknown", "")
+
+
 @lru_cache(maxsize=1)
 def _load_eco_table() -> Tuple[Tuple[str, str, Tuple[str, ...]], ...]:
     """Load ``data/eco.tsv`` (``eco<TAB>name<TAB>pgn_moves``) if it exists.
@@ -1342,6 +1390,7 @@ def extract_facts(
     }
 
     result = meta["result"]
+    meta["outcome"] = _describe_outcome(headers, plies, board)
     biggest_swing_ply: Optional[int] = None
     biggest_swing = 0
     for p in plies:

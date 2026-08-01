@@ -201,9 +201,16 @@ def _score_game(meta: Dict, pgn: str) -> float:
     elif result == "1/2-1/2":
         score -= 10
 
+    # Length is the one input the writing cannot manufacture. The director
+    # pulls the script toward eight minutes, but it can only stretch what the
+    # game gives it: a 30-ply miniature has nothing to say for that long, and
+    # padding it would trade watch time for duration. So the pool prefers
+    # games with the material to fill the slot honestly.
     ply = meta.get("ply_count") or 0
-    if 40 <= ply <= 120:
-        score += 30
+    if 60 <= ply <= 120:
+        score += 35
+    elif 40 <= ply < 60:
+        score += 25
     elif 24 <= ply < 40 or 120 < ply <= 160:
         score += 10
     elif ply < 16:

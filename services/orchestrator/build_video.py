@@ -227,7 +227,7 @@ def _named_video_copy(script: Dict[str, Any]) -> Optional[Path]:
 
 
 def apply_think_pauses(
-    script: Dict[str, Any], manifest: Dict[str, Any], pause_ms: int = 5000, limit: int = 2
+    script: Dict[str, Any], manifest: Dict[str, Any], pause_ms: int = 5000, limit: int = 3
 ) -> int:
     """Give a "pause and find it" moment an actual pause.
 

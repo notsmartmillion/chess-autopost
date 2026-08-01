@@ -71,6 +71,13 @@ export interface ScriptMeta {
   llmThumb?: string | null;
   /** Intro quotation. Hand-checked table, never model-written. */
   quote?: {text: string; author: string; portrait?: string | null} | null;
+  /** How the game ended — derived from the final position, not just Result. */
+  outcome?: {
+    type: 'checkmate' | 'resignation' | 'stalemate' | 'insufficient' |
+          'repetition' | 'draw' | 'timeout' | 'abandoned' | 'unknown';
+    winner?: 'white' | 'black' | null;
+    text?: string;
+  } | null;
 }
 
 export interface Script {

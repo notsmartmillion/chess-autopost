@@ -212,6 +212,17 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
   // its piece travels, through a variation, and through the hold and resume
   // beats on either side of one, which carry no move of their own.
   // (Recomputed per frame by nature; the scan is ~100 segments, trivial.)
+  // The winner is only named once the last move has been played. Marking a
+  // card gold any earlier would tell the viewer the result while they are
+  // still watching the game find it.
+  const lastMoveSeg = [...segments].reverse().find((s) => s.beat.move && !s.beat.branch);
+  const gameOver = Boolean(
+    lastMoveSeg &&
+      frame >= lastMoveSeg.from +
+        Math.round(((lastMoveSeg.beat.moveAtMs || 0) * fps) / 1000) +
+        Math.round(fps * 0.6)
+  );
+
   const revealed = !beat.move || frame >= moveStartFrame;
   let lastReal: Beat | null = null;
   for (const seg of segments) {
@@ -349,12 +360,14 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           side="black"
           active={activeSide === 'black'}
           portrait={meta.blackPortrait}
+          won={gameOver && meta.outcome?.winner === 'black'}
         />
         <PlayerCard
           name={white}
           side="white"
           active={activeSide === 'white'}
           portrait={meta.whitePortrait}
+          won={gameOver && meta.outcome?.winner === 'white'}
         />
       </div>
 
@@ -465,16 +478,19 @@ const TitleOverlay: React.FC<{
   });
 
   const isOutro = beat.kind === 'outro';
+  // "Result 0-1" tells a viewer who won and nothing about how. The fact sheet
+  // works out whether the king was mated or a hand was shaken, so say that.
+  const outcome = meta.outcome;
   const subtitle = isOutro
-    ? meta.result && meta.result !== '*'
-      ? `Result  ${meta.result}`
-      : undefined
+    ? outcome?.text || (meta.result && meta.result !== '*' ? `Result  ${meta.result}` : undefined)
     : [meta.event, prettyDate(meta.date)].filter(Boolean).join('  ·  ') || undefined;
 
   return (
     <AbsoluteFill
       style={{
-        background: 'rgba(9,12,17,0.90)',
+        // Denser for the outro than the intro: the move panel used to read
+        // straight through the line naming how the game ended.
+        background: isOutro ? 'rgba(9,12,17,0.965)' : 'rgba(9,12,17,0.90)',
         alignItems: 'center',
         justifyContent: 'center',
         opacity,
@@ -482,7 +498,29 @@ const TitleOverlay: React.FC<{
     >
       <div style={{textAlign: 'center', color: THEME.text, padding: 60}}>
         {isOutro ? (
-          <div style={{fontSize: 78, letterSpacing: 1}}>Thanks for watching</div>
+          <>
+            {outcome?.winner && (
+              <div
+                style={{
+                  fontSize: 68,
+                  lineHeight: 1.15,
+                  letterSpacing: 3,
+                  color: '#f2c14e',
+                }}
+              >
+                {(outcome.winner === 'white' ? white : black).toUpperCase()} WINS
+              </div>
+            )}
+            {/* How it ended belongs with the result, not below the sign-off. */}
+            {subtitle && (
+              <div style={{fontSize: 36, marginTop: 16, letterSpacing: 1.5, opacity: 0.85}}>
+                {subtitle}
+              </div>
+            )}
+            <div style={{fontSize: 46, letterSpacing: 1, marginTop: 44, opacity: 0.8}}>
+              Thanks for watching
+            </div>
+          </>
         ) : (
           <>
             <div style={{fontSize: 30, letterSpacing: 7, color: THEME.accent, marginBottom: 30}}>
@@ -493,7 +531,7 @@ const TitleOverlay: React.FC<{
             <div style={{fontSize: 82, lineHeight: 1.18}}>{black}</div>
           </>
         )}
-        {subtitle && (
+        {subtitle && !isOutro && (
           <div style={{fontSize: 32, color: THEME.muted, marginTop: 34, letterSpacing: 1.5}}>
             {subtitle}
           </div>

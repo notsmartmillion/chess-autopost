@@ -150,7 +150,9 @@ BY_PLAYER: Dict[str, List[str]] = {
         "If your opponent offers you a draw, try to work out why he thinks "
         "he is worse off.",
     ],
-    "hubner": [
+    # Wikidata spells him Huebner, and so does the cached portrait; a PGN
+    # using "Hubner" simply gets no quote rather than a broken image.
+    "huebner": [
         "Those who say they understand chess understand nothing.",
     ],
     "prins": [

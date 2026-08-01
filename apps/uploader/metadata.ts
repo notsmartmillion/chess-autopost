@@ -84,25 +84,49 @@ function links() {
   };
 }
 
+/** "1-0" is jargon above the fold; say who won and keep the notation. */
+function readableResult(raw: string | null | undefined): string | undefined {
+  const r = clean(raw);
+  if (!r || r === '*') return undefined;
+  if (r === '1-0') return '1-0 (White wins)';
+  if (r === '0-1') return '0-1 (Black wins)';
+  if (r.startsWith('1/2')) return '½-½ (Draw)';
+  return r;
+}
+
 /**
- * Build the full YouTube description.
+ * Build the full YouTube description, to the channel's fixed template.
+ *
+ * The shape is deliberately identical on every video — the same section
+ * order, the same standing copy — so the channel reads as one series rather
+ * than a hundred one-offs. Only four things vary: the opening sentences, the
+ * game details, the photo credits, and the chapters the CLI appends.
  *
  * Order matters: only the first ~150 characters show above the fold, so the
- * hook leads and the housekeeping trails. Chapters are appended by the CLI,
- * which owns the timings.
+ * game-specific hook leads and the housekeeping trails.
  */
 export function generateDescription(script: Script, moreVideos: string[] = []): string {
   const white = displayName(script.meta.white) ?? 'White';
   const black = displayName(script.meta.black) ?? 'Black';
   const event = clean(script.meta.event);
   const year = parseYear(script.meta.date);
-  const result = clean(script.meta.result);
-  const opening = clean(script.meta.opening?.name) ?? clean(script.meta.eco);
+  const result = readableResult(script.meta.result);
+  // A bare ECO code means nothing to most viewers, so an unnamed opening is
+  // left out of the listing entirely rather than printed as "Opening: D41".
+  const openingName = clean(script.meta.opening?.name);
+  const openingCode = clean(script.meta.opening?.eco) ?? clean(script.meta.eco);
+  const opening = openingName
+    ? openingCode
+      ? `${openingName} (${openingCode})`
+      : openingName
+    : undefined;
+  const channel = clean(script.meta.channel) ?? 'Nocturne Chess';
   const l = links();
 
   const blocks: string[] = [];
 
-  // 1. Hook — the only part most viewers ever read.
+  // 1. The only genuinely unique paragraph, and the only part most viewers
+  // ever read. The narration model wrote it, having seen the whole game.
   const hook = clean(script.meta.llmHook);
   blocks.push(
     hook ??
@@ -111,34 +135,50 @@ export function generateDescription(script: Script, moreVideos: string[] = []): 
         'and what the engine would have played instead.'
   );
 
-  // 2. The game at a glance.
+  blocks.push(
+    `In this episode of ${channel}, experience a remarkable game presented with ` +
+      'calm narration, atmospheric sound and clear strategic storytelling.'
+  );
+
+  // 2. The game at a glance. Lines whose value is unknown are omitted rather
+  // than printed with a placeholder — a PGN with no Event is common, and
+  // "Event: ?" looks like a bug to a viewer.
   const facts = [`White: ${white}`, `Black: ${black}`];
-  if (event || year) facts.push(`Event: ${[event, year].filter(Boolean).join(', ')}`);
+  if (event) facts.push(`Event: ${event}`);
+  if (year) facts.push(`Year: ${year}`);
   if (opening) facts.push(`Opening: ${opening}`);
-  if (result && result !== '*') facts.push(`Result: ${result}`);
-  blocks.push(facts.join('\n'));
+  if (result) facts.push(`Result: ${result}`);
+  blocks.push(['♟ GAME DETAILS', '', ...facts].join('\n'));
 
-  // 3. What the viewer gets.
-  const highlights = extractHighlights(script);
-  if (highlights.length > 0) {
-    blocks.push(['In this video:', ...highlights.map((h) => `• ${h}`)].join('\n'));
-  }
+  blocks.push(
+    `${channel} presents relaxing narrations of memorable games from chess ` +
+      'history, with original commentary, board animation, sound design and editing.'
+  );
 
-  // 4. Calls to action.
+  blocks.push(
+    [
+      'Subscribe for:',
+      '• Calm narrated chess games',
+      '• Historic chess masterpieces',
+      '• Brilliant attacks and sacrifices',
+      '• Strategic explanations',
+      '• Relaxing late-night chess',
+    ].join('\n')
+  );
+
+  // 3. Calls to action, each omitted entirely when its link is unset.
   const cta: string[] = [];
   if (l.playChess) cta.push(`Play chess free: ${l.playChess}`);
   if (l.support) cta.push(`Support the channel: ${l.support}`);
   if (l.channel) cta.push(`More games like this: ${l.channel}`);
   if (cta.length) blocks.push(cta.join('\n'));
 
-  blocks.push('Like and subscribe if you enjoyed this one — it genuinely helps the channel.');
-
-  // 5. Related videos, when the uploader was able to fetch them.
+  // 4. Related videos, when the uploader was able to fetch them.
   if (moreVideos.length > 0) {
     blocks.push(['More videos:', ...moreVideos].join('\n'));
   }
 
-  // 6. Housekeeping. The disclosure must stay if any link above is an affiliate
+  // 5. Housekeeping. The disclosure must stay if any link above is an affiliate
   // link — that is an FTC requirement, not a stylistic choice. Photo credits
   // are the same kind of obligation: the portraits come from Wikimedia
   // Commons, and a CC BY-SA licence is only honoured if the credit travels
@@ -163,15 +203,20 @@ export function generateDescription(script: Script, moreVideos: string[] = []): 
   return blocks.join('\n\n');
 }
 
-/** A small, relevant hashtag set — YouTube only surfaces the first three. */
+/**
+ * A small, relevant hashtag set. YouTube surfaces only the first three above
+ * the title, so the channel's own three lead and the game-specific ones
+ * follow — the brand tag is the one worth owning.
+ */
 function hashtags(script: Script): string[] {
-  const tags = ['#chess', '#chessgame', '#chessanalysis'];
+  const channel = (clean(script.meta.channel) ?? 'Nocturne Chess').replace(/[^A-Za-z0-9]/g, '');
+  const tags = ['#Chess', '#ChessGames', `#${channel}`];
   for (const name of [displayName(script.meta.white), displayName(script.meta.black)]) {
     const surname = name?.split(' ').pop();
-    if (surname && /^[A-Za-z]{3,}$/.test(surname)) tags.push(`#${surname.toLowerCase()}`);
+    if (surname && /^[A-Za-z]{3,}$/.test(surname)) tags.push(`#${surname}`);
   }
-  if (script.beats.some((b) => b.tag === 'brilliant')) tags.push('#brilliantmove');
-  if (script.beats.some((b) => b.tag === 'blunder')) tags.push('#blunder');
+  if (script.beats.some((b) => b.tag === 'brilliant')) tags.push('#BrilliantMove');
+  if (script.beats.some((b) => b.tag === 'blunder')) tags.push('#Blunder');
   return tags.slice(0, 6);
 }
 

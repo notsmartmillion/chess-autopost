@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "cli": "tsx cli.ts",
+    "authorize": "tsx authorize.ts",
     "build": "tsc --noEmit"
   },
   "dependencies": {

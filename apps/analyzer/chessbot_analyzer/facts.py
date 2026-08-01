@@ -1128,6 +1128,15 @@ def extract_facts(
     eco_match, opening_name, book_ply = _safe(
         "openingMatch", lambda: _match_opening(san_moves), (None, None, 0)
     )
+    # The move-matching book above needs data/eco.tsv, which has never been
+    # shipped — so the name was None on every game and the description printed
+    # a bare "Opening: D41". Fall back to naming the ECO code the PGN already
+    # carries. Still None for codes we have no entry for: an unnamed opening
+    # is omitted from the listing, which is better than a wrong name.
+    if not opening_name:
+        from .eco_names import name_for  # noqa: PLC0415
+
+        opening_name = name_for(eco_match or headers.get("ECO"))
 
     adapter = _EngineAdapter(engine)
     plies: List[Dict[str, Any]] = []

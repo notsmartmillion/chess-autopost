@@ -47,7 +47,10 @@ export const SubscribeBadge: React.FC<{
         // video, so nothing has to move aside to make room. Right edge aligned
         // to the board's, which is a line the eye already follows.
         right: 1920 - (96 + 880),
-        top: 30,
+        // The board's top edge is at y=100. The badge is 72 tall, so a top of
+        // 30 put its last two rows of pixels on the board — visible as the
+        // pill resting on the a8 rank rather than floating above it.
+        top: 16,
         display: 'flex',
         alignItems: 'center',
         gap: 16,

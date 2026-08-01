@@ -146,27 +146,19 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
     return intros.length ? intros[intros.length - 1].id : null;
   }, [beats]);
 
-  // Subscribe prompts: once the viewer has committed to the game, once in the
-  // middle, once over the sign-off where asking is expected. Six seconds each
-  // — two five-second showings proved short enough that the channel's own
-  // maker watched the video twice without registering one. Appearances that
-  // would crowd each other are dropped rather than squeezed.
-  const subscribeAt: number[] = useMemo(() => {
-    const total = segments.length
-      ? segments[segments.length - 1].from + segments[segments.length - 1].durationInFrames
-      : 0;
-    const outro = segments.find((s) => s.beat.kind === 'outro');
-    const first = Math.round(fps * 75);
-    const mid = Math.round(total * 0.55);
-    const last = outro
-      ? outro.from + Math.round(outro.durationInFrames * 0.35)
-      : total - Math.round(fps * 14);
-    const out: number[] = [];
-    if (last - first > fps * 30) out.push(first);
-    if (mid - first > fps * 60 && last - mid > fps * 60) out.push(mid);
-    if (last > first) out.push(last);
-    return out;
+  // The subscribe badge is permanent once the game starts. Timed showings
+  // were tried twice and the channel's own maker missed them both times; the
+  // badge is not clickable anyway (baked pixels never are — YouTube's
+  // branding watermark is the clickable one), so it works as a standing
+  // reminder or not at all. It waits out the intro cards rather than float
+  // over the quotation, then stays to the end.
+  const subscribeFrom: number = useMemo(() => {
+    const firstGame = segments.find((s) => s.beat.kind !== 'intro');
+    return firstGame ? firstGame.from : Math.round(fps * 10);
   }, [segments, fps]);
+  const totalFrames = segments.length
+    ? segments[segments.length - 1].from + segments[segments.length - 1].durationInFrames
+    : 0;
 
   if (!script || beats.length === 0) {
     return (
@@ -433,9 +425,12 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
       {/* Subscribe prompt, twice: once the viewer is invested in the game,
           and again under the sign-off. Never during the intro cards, which
           are already carrying text. */}
-      {subscribeAt.map((at, i) => (
-        <SubscribeBadge key={`sub-${i}`} startFrame={at} holdFrames={fps * 6} />
-      ))}
+      {totalFrames > subscribeFrom && (
+        <SubscribeBadge
+          startFrame={subscribeFrom}
+          holdFrames={totalFrames - subscribeFrom}
+        />
+      )}
 
       {/* Narration audio, one clip per beat */}
       {segments.map(({beat: b, from, durationInFrames}) =>

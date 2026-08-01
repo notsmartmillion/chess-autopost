@@ -9,10 +9,11 @@ import {THEME} from './AnalysisRail';
  * governed by their brand guidelines, and a saturated red pill would fight
  * everything else on screen anyway — this channel's whole look is quiet.
  *
- * It also does not sit there permanently. A badge that never leaves stops
- * being read after ten seconds; one that arrives, waits, and goes is noticed
- * every time. It appears twice: once after the viewer has settled into the
- * game, and once more over the sign-off.
+ * It stays up for the whole game. Timed showings were tried twice and missed
+ * both times by the channel's own maker; a baked-in badge is not clickable
+ * regardless (YouTube's branding watermark is the clickable one), so it
+ * works as a standing reminder or not at all. The caller decides when it
+ * enters — after the intro cards — and it holds to the final frame.
  */
 export const SubscribeBadge: React.FC<{
   /** Absolute frame the badge begins its entrance. */

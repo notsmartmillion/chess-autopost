@@ -267,6 +267,21 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
   const shownPly = lastReal?.ply ?? null;
   const shownEvalCp = (beat.branch ? beat.evalCp : railBeat?.evalCp) ?? 0;
 
+  // A variation's entrance has to be unmissable: the board is about to show
+  // moves that never happened, and a viewer who missed the hand-off thinks
+  // the game itself continued this way. The frame the current branch RUN
+  // began at drives a ribbon and a border flash; both settle once the eye
+  // has been told.
+  const branchRunFrom: number = useMemo(() => {
+    if (!beat.branch) return 0;
+    let from = current?.from ?? 0;
+    for (let i = currentIndex - 1; i >= 0; i--) {
+      if (!segments[i].beat.branch) break;
+      from = segments[i].from;
+    }
+    return from;
+  }, [beat.branch, current, currentIndex, segments]);
+
   // Highlight whoever played the move on screen — the side to move in the
   // position *before* it. Reading the post-move FEN lit up the opponent.
   const sideSource = railBeat ?? beat;
@@ -341,6 +356,79 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           badge={moveBadge}
           showCoordinates
         />
+
+        {/* Variation entrance. The subtle purple border alone was missed in
+            viewing: the board is about to show moves that never happened, and
+            that must not be missable. A ribbon drops in naming the line and
+            stays for the whole branch; the border flashes bright for the
+            first moments, then hands back to the quiet chrome. */}
+        {beat.branch && (
+          <>
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                pointerEvents: 'none',
+                boxShadow: `inset 0 0 0 ${interpolate(
+                  frame,
+                  [branchRunFrom, branchRunFrom + 8, branchRunFrom + 30],
+                  [14, 10, 3],
+                  {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}
+                )}px #b28cff`,
+                opacity: interpolate(
+                  frame,
+                  [branchRunFrom, branchRunFrom + 6, branchRunFrom + 30],
+                  [0, 1, 0.85],
+                  {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}
+                ),
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 14,
+                padding: '12px 0',
+                background: 'rgba(38,26,64,0.92)',
+                borderBottom: '2px solid #b28cff',
+                transform: `translateY(${interpolate(
+                  frame,
+                  [branchRunFrom, branchRunFrom + 12],
+                  [-64, 0],
+                  {
+                    extrapolateLeft: 'clamp',
+                    extrapolateRight: 'clamp',
+                    easing: Easing.out(Easing.cubic),
+                  }
+                )}px)`,
+                // Announce, then get out of the way: the ribbon sits over the
+                // eighth rank, and during a variation those squares can
+                // matter. The VARIATION panel in the rail carries the label
+                // for the rest of the branch.
+                opacity: interpolate(
+                  frame,
+                  [branchRunFrom + fps * 4, branchRunFrom + fps * 5],
+                  [1, 0],
+                  {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}
+                ),
+              }}
+            >
+              <span style={{fontSize: 21, letterSpacing: 4, color: '#b28cff'}}>
+                WHAT COULD HAVE BEEN
+              </span>
+              {beat.label && (
+                <span style={{fontSize: 23, color: THEME.text}}>
+                  · {beat.label}
+                </span>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       {/* Event caption under the board */}

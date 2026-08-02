@@ -242,6 +242,7 @@ class Director:
 
         variations_used = 0
         holds_used = 0
+        shown_recommendations: set = set()
         for ply in plies:
             key_moment = key_by_ply.get(ply["ply"])
             quality = ply.get("quality")
@@ -264,6 +265,20 @@ class Director:
             if not self._deserves_variation(ply, key_moment):
                 continue
 
+            # One idea, one variation. A game can miss the same move three
+            # times — the last render showed "Better was b5" three times in
+            # four minutes — and each repeat teaches nothing while costing a
+            # take seam and a minute of screen time. The recommendation's
+            # first move is the idea's fingerprint; once shown, later misses
+            # of the same move are the narrator's to mention in passing, not
+            # the board's to replay.
+            rec = (ply.get("bestPvSan") or [None])[0]
+            if rec is not None and rec in shown_recommendations:
+                logger.info(
+                    f"director: skipping repeat variation ({rec} already shown)"
+                )
+                continue
+
             quality = ply.get("quality")
             if quality in ("brilliant", "great") and ply.get("alternatives"):
                 # Explain the brilliancy by refuting the natural alternative.
@@ -275,6 +290,8 @@ class Director:
                 beats.extend(var_beats)
                 beats.append(self._resume_beat(ply))
                 variations_used += 1
+                if rec is not None:
+                    shown_recommendations.add(rec)
                 if holds_used < self.max_holds and quality in ("blunder", "brilliant"):
                     beats.append(self._hold_beat(ply, before=False, major=False))
                     holds_used += 1

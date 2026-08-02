@@ -1428,18 +1428,20 @@ def _ttsapi_synthesize(
     # so each seam is a ~50 Hz step and the voice reads as two alternating
     # narrators. The cheapest half of the cure is simply to have fewer seams:
     # merge neighbouring runs up to a synthesis budget well above the writing
-    # budget. Variations keep their own take — that separation is deliberate,
-    # and the point is to soften the step, not to remove the boundary.
-    def _branchy(g: List[Dict[str, Any]]) -> bool:
-        return any(i.get("branch") for i in g)
-
+    # budget.
+    #
+    # Variations used to keep their own take — the separation was deliberate,
+    # meant to soften the step rather than remove the boundary. Three renders
+    # of listening said otherwise: the moments repeatedly reported as "a
+    # different announcer takes over" were variation entrances, which is
+    # exactly where that policy placed a cold start. The boundary the viewer
+    # needs is visual (the board tints, the banner names the line); the voice
+    # should read straight through it.
     merged: List[List[Dict[str, Any]]] = []
     for g in groups:
         prev = merged[-1] if merged else None
         joinable = (
             prev is not None
-            and not _branchy(prev)
-            and not _branchy(g)
             and sum(len(i["text"].split()) for i in prev + g) <= SYNTH_WORD_BUDGET
         )
         if joinable:

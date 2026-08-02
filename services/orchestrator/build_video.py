@@ -87,13 +87,48 @@ def _clear_dir(path: Path, pattern: str = "*") -> None:
                 pass
 
 
-# "the knight on d3", "her rook back on f1" — a piece named on a square.
+# "the knight on d3", "her rook back on f1", "the king is tucked on h2",
+# "the king sits on h7" — a piece named on a square, with up to two short
+# filler words between them. Enumerating the fillers ("sitting", "tucked", …)
+# kept losing to the next paraphrase the model invented; the anchor that
+# actually matters is piece-word … on/at … square.
 _MENTION_RE = re.compile(
     r"\b(king|queen|rook|bishop|knight|pawn)s?\s+"
-    r"(?:(?:sitting|standing|back|still|over|waiting|stuck)\s+)?"
-    r"(?:on|at)\s+([a-h][1-8])\b",
+    r"(?:[a-z']+\s+){0,2}?"
+    r"(?:on|at)\s+([a-hA-H][1-8])\b",
     re.IGNORECASE,
 )
+
+# The same claim with the words reversed: "that f5 pawn", "the e4 knight".
+_MENTION_REV_RE = re.compile(
+    r"(?<![A-Za-z0-9])([a-hA-H][1-8])\s+(king|queen|rook|bishop|knight|pawn)s?\b",
+    re.IGNORECASE,
+)
+
+# A square talked ABOUT rather than occupied: where a piece is going, what it
+# watches, the squares a diagonal runs through. There is nothing to verify
+# against the board — the whole point of "the moment a bishop lands on e4" is
+# that e4 is empty — so these are matched narrowly, by the verb that
+# introduces them, and marked as a different kind of highlight.
+_FOCUS_RE = re.compile(
+    r"\b(?:lands?|landing|drops?|dropping|goes?|going|heads?|heading|"
+    r"comes?|coming|steps?|stepping|swings?|swinging|jumps?|jumping|"
+    r"runs?|running|aims?|aiming|eyes?|eyeing|watches|watching|"
+    r"targets?|hits?|hitting|covers?|covering|controls?|controlling)\s+"
+    r"(?:the\s+|its\s+|his\s+|her\s+)?"
+    r"(?:on|to|at|for|onto|into|through|over)?\s*"
+    r"([a-hA-H][1-8])(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
+# "the diagonal that runs f5, g6, h7" — a run of squares. The run is found
+# first and every square inside it emitted, because a lookahead-based version
+# always dropped the final square of the list.
+_SQUARE_RUN_RE = re.compile(
+    r"(?<![A-Za-z0-9])[a-hA-H][1-8](?:\s*(?:,|and|then|to)\s*[a-hA-H][1-8])+",
+    re.IGNORECASE,
+)
+_SQUARE_TOKEN_RE = re.compile(r"[a-hA-H][1-8]")
 
 _PIECE_BY_NAME = {
     "king": 6, "queen": 5, "rook": 4, "bishop": 3, "knight": 2, "pawn": 1,
@@ -132,30 +167,48 @@ def _mention_highlights(beat: Dict[str, Any], clip: Dict[str, Any]) -> List[Dict
     move_at = int(beat.get("moveAtMs") or 0)
     already = {h.get("square") for h in (beat.get("highlights") or [])}
 
+    # Every square the narration points at, from four sentence shapes:
+    # "knight on e4" and "the e4 knight" (occupied — verified against the
+    # board), "lands on e4" / "runs f5, g6, h7" (talked about — the square is
+    # often empty by design, so the claim IS the text, and the audit checks
+    # the text separately).
+    candidates: List[tuple] = []
+    for m in _MENTION_RE.finditer(text):
+        candidates.append((m.group(2).lower(), m.group(1).lower(), m.start(2)))
+    for m in _MENTION_REV_RE.finditer(text):
+        candidates.append((m.group(1).lower(), m.group(2).lower(), m.start(1)))
+    for m in _FOCUS_RE.finditer(text):
+        candidates.append((m.group(1).lower(), None, m.start(1)))
+    for run in _SQUARE_RUN_RE.finditer(text):
+        for m in _SQUARE_TOKEN_RE.finditer(run.group(0)):
+            candidates.append((m.group(0).lower(), None, run.start() + m.start()))
+    candidates.sort(key=lambda c: c[2])
+
     out: List[Dict[str, Any]] = []
     seen: set = set()
-    for m in _MENTION_RE.finditer(text):
-        piece_name = m.group(1).lower()
-        square = m.group(2).lower()
+    for square, piece_name, pos in candidates:
         if square in skip or square in seen or square in already:
             continue
-        approx_idx = len(text[: m.start(2)].split())
+        approx_idx = len(text[:pos].split())
         spoken = _time_of_token(words, square, approx_idx)
         if spoken is None:
             continue
         at_ms = int(spoken * 1000)
-        # The board shows prevFen until the move lands, fen after — verify
-        # against whichever position is on screen when the words are heard.
-        fen = beat.get("fen") if (not move or at_ms >= move_at) else beat.get("prevFen")
-        try:
-            piece = chess.Board(fen).piece_at(chess.parse_square(square))
-        except Exception:
-            continue
-        if piece is None or piece.piece_type != _PIECE_BY_NAME[piece_name]:
-            continue
+        if piece_name is not None:
+            # An occupancy claim is verifiable, so verify it — against the
+            # position on screen at the moment the words are heard.
+            fen = beat.get("fen") if (not move or at_ms >= move_at) else beat.get("prevFen")
+            try:
+                piece = chess.Board(fen).piece_at(chess.parse_square(square))
+            except Exception:
+                continue
+            if piece is None or piece.piece_type != _PIECE_BY_NAME[piece_name]:
+                continue
         seen.add(square)
         out.append({"square": square, "atMs": at_ms})
-        if len(out) >= 3:
+        # A reading-the-position beat can name ten squares; light the ones a
+        # viewer can follow. Above six the board is a Christmas tree.
+        if len(out) >= 6:
             break
     return out
 

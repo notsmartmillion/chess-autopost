@@ -303,12 +303,22 @@ def check_board_directives(script: Dict[str, Any], rep: Report) -> None:
                            "their target with time to be read")
 
 
+_EXCHANGE_VALUE = {
+    chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330,
+    chess.ROOK: 500, chess.QUEEN: 900, chess.KING: 20000,
+}
+
+
 def _piece_can_be_saved_in_place(board: "chess.Board", square_name: str) -> bool:
     """True if the piece on this square can be kept safe WITHOUT moving it.
 
-    That is exactly the refutation of "the piece must move": defend it, block
-    the attack, or capture the attacker. Only same-side legal moves that leave
-    the piece standing are considered.
+    That is exactly the refutation of "the piece must move": block the attack,
+    capture the attacker with something else, or defend it — where defending
+    only counts against attackers of equal or greater value. A bishop attacked
+    by a pawn is not saved by a defender: the pawn takes it and comes out
+    ahead whatever recaptures. The first version of this function did not know
+    that, and convicted a correct narration on the strength of three
+    "defences" that all lost a bishop for a pawn.
     """
     try:
         sq = chess.parse_square(square_name)
@@ -317,8 +327,20 @@ def _piece_can_be_saved_in_place(board: "chess.Board", square_name: str) -> bool
     piece = board.piece_at(sq)
     if piece is None:
         return False
-    if not board.attackers(not piece.color, sq):
-        return True  # not even attacked; "must move" is already false
+
+    def safe(b: "chess.Board") -> bool:
+        attackers = b.attackers(not piece.color, sq)
+        if not attackers:
+            return True
+        if not b.attackers(piece.color, sq):
+            return False
+        cheapest = min(
+            _EXCHANGE_VALUE[b.piece_at(a).piece_type] for a in attackers
+        )
+        return cheapest >= _EXCHANGE_VALUE[piece.piece_type]
+
+    if safe(board):
+        return True
     work = board.copy(stack=False)
     work.turn = piece.color
     for mv in work.legal_moves:
@@ -326,11 +348,7 @@ def _piece_can_be_saved_in_place(board: "chess.Board", square_name: str) -> bool
             continue  # that IS moving it
         after = work.copy(stack=False)
         after.push(mv)
-        if after.piece_at(sq) != piece:
-            continue
-        attackers = after.attackers(not piece.color, sq)
-        defenders = after.attackers(piece.color, sq)
-        if not attackers or defenders:
+        if after.piece_at(sq) == piece and safe(after):
             return True
     return False
 

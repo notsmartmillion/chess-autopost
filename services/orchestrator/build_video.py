@@ -464,7 +464,7 @@ def main() -> int:
     ensure_dirs()
 
     from chessbot_analyzer.facts import extract_facts, save_facts
-    from chessbot_analyzer.director import build_script, save_script
+    from chessbot_analyzer.director import build_script, repair_narration, save_script
     from tts import synthesize
 
     pgn_path = Path(args.pgn)
@@ -527,6 +527,10 @@ def main() -> int:
         for key in ("llmTitle", "llmHook", "llmThumb", "quote", "narration"):
             if prior.get("meta", {}).get(key) is not None:
                 script["meta"][key] = prior["meta"][key]
+        # Reused text has to go through the same repairs fresh narration does.
+        # Skipping them is how a rebuild meant to prove the a-file fix shipped
+        # with the a-file bug still in it.
+        repair_narration(script["beats"])
         print(f"[script] reusing narration from previous build "
               f"({len(matched)} beats, title: {script['meta'].get('llmTitle')!r})")
     beats = script.get("beats", [])

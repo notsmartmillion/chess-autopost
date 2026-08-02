@@ -1884,12 +1884,7 @@ def build_script(
         if narrate_with_llm(script, facts):
             script["meta"]["narration"] = "llm"
             apply_signoff(script["beats"], director.signoff())
-            repaired = _fix_leading_squares(script["beats"])
-            if repaired:
-                logger.info(f"Repaired {repaired} beat(s) opening on a bare square")
-            capped = _capitalise_a_file(script["beats"])
-            if capped:
-                logger.info(f"Capitalised {capped} a-file square(s) for the voice")
+            repair_narration(script["beats"])
             _reflow_paragraphs(script["beats"])
             logger.info("Narration: LLM")
         else:
@@ -1943,6 +1938,23 @@ def apply_signoff(beats: List[Dict[str, Any]], signoff: str) -> None:
 # A word boundary on the left keeps "Na4" and "Rxa4" alone; those already read
 # correctly because the letter before the "a" stops it looking like an article.
 _A_FILE_SQUARE = re.compile(r"(?<![A-Za-z0-9])a([1-8])(?![a-z0-9])")
+
+
+def repair_narration(beats: List[Dict[str, Any]]) -> None:
+    """Every text repair the spoken script needs, in one place.
+
+    These used to live inline in the LLM branch, which meant --reuse-narration
+    silently skipped all of them: reused text went to the voice with its
+    lower-case a-file squares intact, and the render came back saying
+    "uh-four" despite the fix being in. Anything that touches narration text
+    belongs here so both paths get it.
+    """
+    repaired = _fix_leading_squares(beats)
+    if repaired:
+        logger.info(f"Repaired {repaired} beat(s) opening on a bare square")
+    capped = _capitalise_a_file(beats)
+    if capped:
+        logger.info(f"Capitalised {capped} a-file square(s) for the voice")
 
 
 def _capitalise_a_file(beats: List[Dict[str, Any]]) -> int:

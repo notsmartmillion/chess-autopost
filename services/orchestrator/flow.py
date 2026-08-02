@@ -414,11 +414,19 @@ def upload_video(privacy: str, dry_run: bool = False) -> Optional[Dict]:
     if result_path.exists():
         result_path.unlink()
 
+    # Prefer the script filed beside the video over the transient one in
+    # outputs/, so a video can never be uploaded with another game's
+    # description.
+    lib = _newest_library_copy()
+    script_for_upload = OUT / "script.json"
+    if lib is not None and lib.with_suffix(".json").exists():
+        script_for_upload = lib.with_suffix(".json")
+
     cmd = [
         npm, "run", "cli", "--",
         "upload",
         "-v", str(VIDEO_PATH),
-        "-t", str(OUT / "script.json"),
+        "-t", str(script_for_upload),
         "-p", privacy,
         "--result-json", str(result_path),
     ]
@@ -427,9 +435,8 @@ def upload_video(privacy: str, dry_run: bool = False) -> Optional[Dict]:
     # Our own subtitle track, built from the render's word timings. It lives
     # beside the library copy rather than in outputs/, since that is the file
     # that survives tomorrow's build.
-    captions = _newest_library_copy()
-    if captions is not None and captions.with_suffix(".srt").exists():
-        cmd += ["-c", str(captions.with_suffix(".srt"))]
+    if lib is not None and lib.with_suffix(".srt").exists():
+        cmd += ["-c", str(lib.with_suffix(".srt"))]
     if dry_run:
         cmd.append("--dry-run")
     log("uploading to YouTube…")

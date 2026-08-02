@@ -44,11 +44,50 @@ function getYouTubeClient() {
 }
 
 /**
+ * Refuse to upload unless the token controls the channel we mean.
+ *
+ * A Google account can own several channels, and OAuth consent quietly
+ * defaults to the personal one — so the first real upload landed on "Tom
+ * Jacobson" instead of Nocturne Chess, and the only reason anyone noticed was
+ * that a human asked. Unattended at three in the morning, nobody asks.
+ *
+ * Set YOUTUBE_CHANNEL_ID in .env to the channel that should receive videos.
+ * Left unset, this only reports what it found: the check cannot be a hard
+ * requirement for people who have not configured it, but it can make the
+ * mistake visible in the log.
+ */
+export async function verifyChannel(): Promise<void> {
+  const youtube = getYouTubeClient();
+  const expected = process.env.YOUTUBE_CHANNEL_ID?.trim();
+  const res = await youtube.channels.list({ part: ['snippet'], mine: true });
+  const channel = res.data.items?.[0];
+  const id = channel?.id ?? '(none)';
+  const title = channel?.snippet?.title ?? '(unknown)';
+
+  if (!expected) {
+    console.warn(
+      `Uploading to "${title}" (${id}). Set YOUTUBE_CHANNEL_ID in .env to ` +
+        'have this verified rather than merely reported.'
+    );
+    return;
+  }
+  if (id !== expected) {
+    throw new Error(
+      `Refusing to upload: this token controls "${title}" (${id}), but ` +
+        `YOUTUBE_CHANNEL_ID is ${expected}. Re-run "npm run authorize" and ` +
+        'pick the right channel at the Google account chooser.'
+    );
+  }
+  console.log(`Channel verified: ${title} (${id})`);
+}
+
+/**
  * Upload video to YouTube
  */
 export async function uploadVideo(options: UploadOptions): Promise<UploadResult> {
   const youtube = getYouTubeClient();
-  
+  await verifyChannel();
+
   try {
     console.log(`Uploading video: ${options.title}`);
     

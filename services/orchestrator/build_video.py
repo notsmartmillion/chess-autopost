@@ -488,6 +488,14 @@ def render(renderer_dir: Path, total_ms: int, script: Dict[str, Any]) -> None:
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[warn] listing not written ({exc})")
+        # The script that produced THIS video, filed with it. outputs/script.json
+        # is transient: any later build overwrites it, and an upload reading it
+        # can then describe a different game entirely. That nearly shipped —
+        # a killed run left a script whose title did not match the render.
+        try:
+            shutil.copy2(OUT / "script.json", named.with_suffix(".json"))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warn] script copy not written ({exc})")
 
 
 def parse_args() -> argparse.Namespace:

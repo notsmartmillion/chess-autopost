@@ -13,7 +13,7 @@ import dotenv from 'dotenv';
 dotenv.config({ path: path.resolve(process.cwd(), '..', '..', '.env') });
 import { Command } from 'commander';
 import fs from 'fs/promises';
-import { uploadVideo, getVideoInfo, updateVideoMetadata, listVideos } from './youtube_client';
+import { uploadVideo, getVideoInfo, updateVideoMetadata, listVideos, verifyChannel } from './youtube_client';
 import type { UploadOptions } from './youtube_client';
 import { generateMetadata } from './metadata';
 import { generateChaptersText } from './chapters';
@@ -81,6 +81,9 @@ https://youtu.be/${v.id.videoId}`);
       };
       
       if (options.dryRun) {
+        // A dry run exists to catch exactly this before it matters, so the
+        // channel is verified here too rather than only on the real upload.
+        await verifyChannel();
         console.log('\n=== DRY RUN - Would upload ===');
         console.log('Title:', uploadOptions.title);
         console.log('Description:', uploadOptions.description.substring(0, 200) + '...');

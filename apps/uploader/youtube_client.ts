@@ -14,6 +14,7 @@ export interface UploadOptions {
   privacy: 'public' | 'unlisted' | 'private';
   publishAt?: string; // ISO date string
   thumbPath?: string;
+  captionsPath?: string;
   categoryId?: string;
   defaultLanguage?: string;
 }
@@ -98,6 +99,18 @@ export async function uploadVideo(options: UploadOptions): Promise<UploadResult>
         console.warn(`Failed to upload thumbnail: ${error}`);
       }
     }
+
+    // Captions, which are ours rather than YouTube's guess at the audio.
+    // Non-fatal like the thumbnail: a published video with automatic captions
+    // beats a failed upload, and the track can be added by hand afterwards.
+    if (options.captionsPath) {
+      try {
+        await uploadCaptions(videoId, options.captionsPath);
+        console.log(`Captions uploaded for video: ${videoId}`);
+      } catch (error) {
+        console.warn(`Failed to upload captions: ${error}`);
+      }
+    }
     
     return {
       videoId,
@@ -109,6 +122,33 @@ export async function uploadVideo(options: UploadOptions): Promise<UploadResult>
     console.error('Video upload failed:', error);
     throw error;
   }
+}
+
+/**
+ * Attach our own subtitle track.
+ *
+ * `name` is what the viewer sees in the subtitle picker; an empty string is
+ * the conventional "default track" and avoids a stray label sitting next to
+ * "English". isDraft=false publishes it immediately — a draft track exists but
+ * is invisible, which looks identical to the upload having failed.
+ */
+export async function uploadCaptions(videoId: string, srtPath: string): Promise<void> {
+  const youtube = getYouTubeClient();
+
+  await youtube.captions.insert({
+    part: ['snippet'],
+    requestBody: {
+      snippet: {
+        videoId,
+        language: 'en',
+        name: '',
+        isDraft: false,
+      },
+    },
+    media: {
+      body: createReadStream(srtPath),
+    },
+  });
 }
 
 /**

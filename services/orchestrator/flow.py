@@ -424,6 +424,12 @@ def upload_video(privacy: str, dry_run: bool = False) -> Optional[Dict]:
     ]
     if THUMBNAIL_PATH.exists():
         cmd += ["-T", str(THUMBNAIL_PATH)]
+    # Our own subtitle track, built from the render's word timings. It lives
+    # beside the library copy rather than in outputs/, since that is the file
+    # that survives tomorrow's build.
+    captions = _newest_library_copy()
+    if captions is not None and captions.with_suffix(".srt").exists():
+        cmd += ["-c", str(captions.with_suffix(".srt"))]
     if dry_run:
         cmd.append("--dry-run")
     log("uploading to YouTube…")

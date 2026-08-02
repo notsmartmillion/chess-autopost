@@ -30,6 +30,12 @@ import { google } from 'googleapis';
 const SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',
   'https://www.googleapis.com/auth/youtube.readonly',
+  // captions.insert is not covered by youtube.upload. force-ssl is the only
+  // scope that grants it, and it is broader than the rest — it can also
+  // delete. Requested because uploading our own subtitle track is worth it:
+  // YouTube's transcription mangles square names, and this render says one 83
+  // times. Nothing in the daily path calls delete.
+  'https://www.googleapis.com/auth/youtube.force-ssl',
 ];
 
 const PORT = 8790;

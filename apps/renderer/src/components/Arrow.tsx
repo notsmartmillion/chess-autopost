@@ -103,15 +103,30 @@ export const Arrow: React.FC<ArrowProps> = ({
   );
   
   const strokeWidth = weight === 'thick' ? 6 : 3; // widened shafts
-  const arrowHeadSize = weight === 'thick' ? 16 : 10; // larger heads
-  
-  // Arrow head points, seated on the shortened tip.
-  const arrowHeadAngle1 = angle - 30;
-  const arrowHeadAngle2 = angle + 30;
-  const arrowHead1X = tip.x - arrowHeadSize * Math.cos(arrowHeadAngle1 * Math.PI / 180);
-  const arrowHead1Y = tip.y - arrowHeadSize * Math.sin(arrowHeadAngle1 * Math.PI / 180);
-  const arrowHead2X = tip.x - arrowHeadSize * Math.cos(arrowHeadAngle2 * Math.PI / 180);
-  const arrowHead2Y = tip.y - arrowHeadSize * Math.sin(arrowHeadAngle2 * Math.PI / 180);
+
+  // The head is built from an explicit length and half-width rather than an
+  // angle, because that is what actually controls whether it reads as an
+  // arrow: a head barely wider than its shaft looks like the line just
+  // stopped. Sized against the square so it holds up at any board size.
+  //
+  // The previous version also drew the triangle between two different points
+  // — barbs measured back from the pulled-back `tip`, apex at the square's
+  // true centre — which stretched it into a sliver forty pixels long and
+  // sixteen wide. Both ends now come from `tip`.
+  const headLen = squareSize * (weight === 'thick' ? 0.21 : 0.15);
+  const headHalf = squareSize * (weight === 'thick' ? 0.125 : 0.085);
+
+  const ux = Math.cos((angle * Math.PI) / 180);
+  const uy = Math.sin((angle * Math.PI) / 180);
+  const baseX = tip.x - ux * headLen;
+  const baseY = tip.y - uy * headLen;
+  const arrowHead1X = baseX - uy * headHalf;
+  const arrowHead1Y = baseY + ux * headHalf;
+  const arrowHead2X = baseX + uy * headHalf;
+  const arrowHead2Y = baseY - ux * headHalf;
+
+  // The shaft stops where the head begins, less a hair so no seam shows.
+  const shaftEnd = { x: baseX + ux * 1.5, y: baseY + uy * 1.5 };
 
   return (
     <div
@@ -152,8 +167,8 @@ export const Arrow: React.FC<ArrowProps> = ({
             <line
               x1={mid.x}
               y1={mid.y}
-              x2={tip.x}
-              y2={tip.y}
+              x2={shaftEnd.x}
+              y2={shaftEnd.y}
               stroke={color}
               strokeWidth={strokeWidth}
               strokeOpacity={animatedOpacity}
@@ -165,8 +180,8 @@ export const Arrow: React.FC<ArrowProps> = ({
           <line
             x1={tail.x}
             y1={tail.y}
-            x2={tip.x}
-            y2={tip.y}
+            x2={shaftEnd.x}
+            y2={shaftEnd.y}
             stroke={color}
             strokeWidth={strokeWidth}
             strokeOpacity={animatedOpacity}
@@ -177,7 +192,8 @@ export const Arrow: React.FC<ArrowProps> = ({
         
         {/* Arrow head */}
         <polygon
-          points={`${toCoords.x},${toCoords.y} ${arrowHead1X},${arrowHead1Y} ${arrowHead2X},${arrowHead2Y}`}
+          points={`${tip.x},${tip.y} ${arrowHead1X},${arrowHead1Y} ${arrowHead2X},${arrowHead2Y}`}
+          strokeLinejoin="round"
           fill={color}
           fillOpacity={animatedOpacity}
         />

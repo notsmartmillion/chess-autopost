@@ -26,6 +26,7 @@ program
   .requiredOption('-v, --video <file>', 'Video file path')
   .requiredOption('-t, --script <file>', 'Script JSON file (outputs/script.json)')
   .option('-T, --thumb <file>', 'Thumbnail file path')
+  .option('-c, --captions <file>', 'SRT subtitle file path')
   .option('-p, --privacy <status>', 'Privacy status', 'unlisted')
   .option('--publish-at <date>', 'Schedule publish date (ISO format)')
   .option('--dry-run', 'Show what would be uploaded without actually uploading')
@@ -68,6 +69,7 @@ https://youtu.be/${v.id.videoId}`);
         tags: metadata.tags,
         privacy: options.privacy as 'public' | 'unlisted' | 'private',
         thumbPath: options.thumb,
+        captionsPath: options.captions,
         publishAt: options.publishAt,
         categoryId: metadata.categoryId,
       };
@@ -80,6 +82,7 @@ https://youtu.be/${v.id.videoId}`);
         console.log('Privacy:', uploadOptions.privacy);
         console.log('Video file:', uploadOptions.path);
         console.log('Thumbnail:', uploadOptions.thumbPath || 'None');
+        console.log('Captions:', uploadOptions.captionsPath || 'None');
         console.log('Publish at:', uploadOptions.publishAt || 'Immediately');
         return;
       }

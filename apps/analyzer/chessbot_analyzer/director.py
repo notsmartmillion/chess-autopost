@@ -188,7 +188,9 @@ class Director:
         *,
         seed: Optional[int] = None,
         max_variation_plies: int = 4,
-        max_variations: int = 10,
+        # Two to four is the band that reads as insight rather than
+        # homework; a ten-variation render arrived exhausting.
+        max_variations: int = 4,
         max_holds: int = 8,
         target_minutes: float = TARGET_MINUTES,
     ) -> None:
@@ -240,9 +242,8 @@ class Director:
 
         beats.extend(self._intro_beats(meta, facts))
 
-        variations_used = 0
         holds_used = 0
-        shown_recommendations: set = set()
+        chosen_variations = self._choose_variations(plies, key_by_ply)
         for ply in plies:
             key_moment = key_by_ply.get(ply["ply"])
             quality = ply.get("quality")
@@ -260,23 +261,7 @@ class Director:
 
             beats.append(self._move_beat(ply, facts, key_moment))
 
-            if variations_used >= self.max_variations:
-                continue
-            if not self._deserves_variation(ply, key_moment):
-                continue
-
-            # One idea, one variation. A game can miss the same move three
-            # times — the last render showed "Better was b5" three times in
-            # four minutes — and each repeat teaches nothing while costing a
-            # take seam and a minute of screen time. The recommendation's
-            # first move is the idea's fingerprint; once shown, later misses
-            # of the same move are the narrator's to mention in passing, not
-            # the board's to replay.
-            rec = (ply.get("bestPvSan") or [None])[0]
-            if rec is not None and rec in shown_recommendations:
-                logger.info(
-                    f"director: skipping repeat variation ({rec} already shown)"
-                )
+            if ply["ply"] not in chosen_variations:
                 continue
 
             quality = ply.get("quality")
@@ -289,9 +274,6 @@ class Director:
             if var_beats:
                 beats.extend(var_beats)
                 beats.append(self._resume_beat(ply))
-                variations_used += 1
-                if rec is not None:
-                    shown_recommendations.add(rec)
                 if holds_used < self.max_holds and quality in ("blunder", "brilliant"):
                     beats.append(self._hold_beat(ply, before=False, major=False))
                     holds_used += 1
@@ -636,6 +618,63 @@ class Director:
         return words
 
     # ---------------------------- variations --------------------------
+
+    def _choose_variations(
+        self, plies: List[Dict[str, Any]], key_by_ply: Dict[int, Dict[str, Any]]
+    ) -> set:
+        """Pick the few branches worth showing, before writing a word.
+
+        Taking variations in game order until a cap was hit spent the budget
+        on whatever happened first, so an early inaccuracy could crowd out the
+        blunder that decided the game. Everything eligible is now scored and
+        the best handful kept.
+
+        The cap is small on purpose. A render with ten variations arrived
+        exhausting rather than thorough — each one stops the game, and past
+        about four the viewer is being shown homework. Two to four is the
+        band; a quiet game with only one real error gets one.
+        """
+        SEVERITY = {"blunder": 100, "mistake": 60, "brilliant": 55, "great": 45,
+                    "inaccuracy": 20}
+        ranked: List[Tuple[float, int, str]] = []
+        for ply in plies:
+            key_moment = key_by_ply.get(ply["ply"])
+            if not self._deserves_variation(ply, key_moment):
+                continue
+            quality = ply.get("quality") or ""
+            score = float(SEVERITY.get(quality, 10))
+            # A missed forced mate outranks everything: nothing else in a game
+            # is as worth stopping for.
+            if ply.get("mateBefore") is not None and ply.get("mateAfter") is None:
+                score += 120
+            cp_loss = ply.get("cpLoss")
+            if isinstance(cp_loss, (int, float)):
+                score += min(float(cp_loss), 400) / 10.0
+            if key_moment:
+                score += float(key_moment.get("score") or 0)
+            rec = (ply.get("bestPvSan") or [None])[0] or ""
+            ranked.append((score, ply["ply"], rec))
+
+        ranked.sort(key=lambda r: (-r[0], r[1]))
+        chosen: set = set()
+        seen_recs: set = set()
+        for score, ply_no, rec in ranked:
+            # One idea, one variation: a game can miss the same move three
+            # times, and each repeat teaches nothing while costing a minute of
+            # screen time and a take seam.
+            if rec and rec in seen_recs:
+                continue
+            chosen.add(ply_no)
+            if rec:
+                seen_recs.add(rec)
+            if len(chosen) >= self.max_variations:
+                break
+        if ranked:
+            logger.info(
+                "director: %d plies deserve a variation, showing %d "
+                "(cap %d)", len(ranked), len(chosen), self.max_variations
+            )
+        return chosen
 
     def _deserves_variation(self, ply: Dict[str, Any], key_moment: Optional[Dict[str, Any]]) -> bool:
         """Show a branch when it teaches something — an error, or a refutation."""

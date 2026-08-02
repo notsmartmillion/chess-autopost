@@ -282,6 +282,18 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
     return from;
   }, [beat.branch, current, currentIndex, segments]);
 
+  // The frame the branch's FIRST move lands. Until then the line's name is
+  // withheld: "Better was g5" printed before g5 appears hands the viewer the
+  // answer and the variation has nothing left to reveal.
+  const branchMoveShown: boolean = useMemo(() => {
+    if (!beat.branch) return true;
+    const first = segments.find((s) => s.from === branchRunFrom);
+    if (!first?.beat.move) return true;
+    const lands =
+      first.from + Math.round(((first.beat.moveAtMs || 0) * fps) / 1000);
+    return frame >= lands;
+  }, [beat.branch, branchRunFrom, segments, frame, fps]);
+
   // Highlight whoever played the move on screen — the side to move in the
   // position *before* it. Reading the post-move FEN lit up the opponent.
   const sideSource = railBeat ?? beat;
@@ -421,7 +433,7 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
               <span style={{fontSize: 21, letterSpacing: 4, color: '#b28cff'}}>
                 WHAT COULD HAVE BEEN
               </span>
-              {beat.label && (
+              {branchMoveShown && beat.label && (
                 <span style={{fontSize: 23, color: THEME.text}}>
                   · {beat.label}
                 </span>
@@ -504,6 +516,7 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
           beat={panelBeat}
           moveNumber={moveNumber}
           isBlack={numberFrom?.ply ? numberFrom.ply % 2 === 0 : false}
+          branchMoveShown={branchMoveShown}
         />
         <MoveList entries={moveEntries} currentPly={shownPly} rows={3} />
       </div>

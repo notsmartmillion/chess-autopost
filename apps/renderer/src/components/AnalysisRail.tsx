@@ -285,7 +285,9 @@ export const CurrentMove: React.FC<{
   beat: Beat;
   moveNumber: number | null;
   isBlack?: boolean;
-}> = ({beat, moveNumber, isBlack = false}) => {
+  /** False until the branch's first move has actually played on the board. */
+  branchMoveShown?: boolean;
+}> = ({beat, moveNumber, isBlack = false, branchMoveShown = true}) => {
   const frame = useCurrentFrame();
   const quality = beat.tag ? QUALITY_STYLE[beat.tag] : undefined;
   const san = beat.move?.san;
@@ -322,11 +324,15 @@ export const CurrentMove: React.FC<{
   }
 
   if (beat.branch) {
+    // The label names the better move ("Better was g5"). Printing it the
+    // instant the branch opens hands the viewer the answer before the board
+    // has shown anything — the suspense the variation exists to create is
+    // over before it starts. So it is withheld until the move has played.
     return (
       <Panel style={{...fill, borderColor: 'rgba(178,140,255,0.5)'}}>
         <Label>Variation</Label>
         <div style={{fontSize: 42, color: THEME.alt, lineHeight: 1.2}}>
-          {beat.label ?? 'Alternative line'}
+          {branchMoveShown ? beat.label ?? 'Alternative line' : 'What if instead…'}
         </div>
         <div style={{fontSize: 24, color: THEME.muted, marginTop: 10}}>
           Not played in the game

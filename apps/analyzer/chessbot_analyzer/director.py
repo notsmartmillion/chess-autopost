@@ -1507,6 +1507,14 @@ to name: a castling beat must contain the word "castles", even mid-sentence — 
 castles and now the g7 bishop stares at d4" — or the king will slide while you talk
 about something else.
 
+FORCE CLAIMS. Words like "must", "forced", "the only move", "has to" are
+factual claims a chess audience will check. Use them ONLY when the facts given
+to you state the position is forced (checkEvasions with onlyKingMoves, a mate
+threat, a listed only-move). An attacked piece almost always has quieter
+outs — a defender, a block, a counter-attack — so write "should move", "wants
+to move", "is being asked a question" unless the facts say otherwise. One
+false "must" costs more credibility than fifty accurate hedges.
+
 RHYTHM DEVICES — use all of these across the video:
 - Question then answer. THIS IS NOT OPTIONAL AND IT IS THE MOST OFTEN IGNORED RULE HERE.
   A question makes the listener lean in and, spoken aloud, lifts the voice instead of

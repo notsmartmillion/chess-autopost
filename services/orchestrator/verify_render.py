@@ -303,6 +303,38 @@ def check_board_directives(script: Dict[str, Any], rep: Report) -> None:
                            "their target with time to be read")
 
 
+def _piece_can_be_saved_in_place(board: "chess.Board", square_name: str) -> bool:
+    """True if the piece on this square can be kept safe WITHOUT moving it.
+
+    That is exactly the refutation of "the piece must move": defend it, block
+    the attack, or capture the attacker. Only same-side legal moves that leave
+    the piece standing are considered.
+    """
+    try:
+        sq = chess.parse_square(square_name)
+    except ValueError:
+        return False
+    piece = board.piece_at(sq)
+    if piece is None:
+        return False
+    if not board.attackers(not piece.color, sq):
+        return True  # not even attacked; "must move" is already false
+    work = board.copy(stack=False)
+    work.turn = piece.color
+    for mv in work.legal_moves:
+        if mv.from_square == sq:
+            continue  # that IS moving it
+        after = work.copy(stack=False)
+        after.push(mv)
+        if after.piece_at(sq) != piece:
+            continue
+        attackers = after.attackers(not piece.color, sq)
+        defenders = after.attackers(piece.color, sq)
+        if not attackers or defenders:
+            return True
+    return False
+
+
 def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) -> None:
     beats = script.get("beats") or []
     by_ply = {p["ply"]: p for p in (facts.get("plies") or [])}
@@ -328,7 +360,21 @@ def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) 
                 lies.append(beat["id"])
         # Word boundaries matter: "it only moved once" is not "the only move".
         if re.search(r"\bhas to move\b|\bmust move\b|\bforced to move\b|\bonly move\b", text):
-            if not ev or not ev.get("onlyKingMoves"):
+            # "The bishop on g6 must move" is a claim about a piece, not the
+            # king, and it is checkable on the board: the claim is true only
+            # if no other move keeps that piece safe. Caught live: a narration
+            # said exactly this while Rh6, Nf8 and Ne5 all defended the bishop.
+            pm = re.search(
+                r"\b(queen|rook|bishop|knight|pawn)\b[^.!?]{0,40}?"
+                r"\bon\s+([a-hA-H][1-8])\b[^.!?]{0,60}?"
+                r"\b(?:must|has to|is forced to)\s+move\b",
+                text)
+            if pm:
+                fen = beat.get("fen")
+                if _legal_fen(fen) and _piece_can_be_saved_in_place(
+                        chess.Board(fen), pm.group(2).lower()):
+                    lies.append(beat["id"])
+            elif not ev or not ev.get("onlyKingMoves"):
                 lies.append(beat["id"])
     if lies:
         rep.error("narration", f"claim contradicts the engine in {sorted(set(lies))[:5]}")
@@ -673,6 +719,12 @@ def check_mentions(script: Dict[str, Any], rep: Report) -> None:
             fen = beat.get("fen") if (not beat.get("move") or at >= move_at) else beat.get("prevFen")
             if not _legal_fen(fen):
                 wrong.append(beat["id"])
+                continue
+            # A focus highlight ("aims at c4", "dreaming of c6") points at a
+            # square that is often empty by design — the sentence is about
+            # where a piece is going, not where one stands. Only occupancy
+            # claims are required to have a piece on the square.
+            if m.get("focus"):
                 continue
             piece = chess.Board(fen).piece_at(chess.parse_square(m["square"]))
             if piece is None:

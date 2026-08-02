@@ -90,5 +90,16 @@
     "narration": "llm",
     "title": "A Knight Left Hanging for Six Moves \u2014 Then Rubinstein Took It",
     "status": "not_uploaded"
+  },
+  {
+    "date": "2026-08-02",
+    "pgn": "2026-08-02_Wheatcroft_vs_Keres.pgn",
+    "archive": "Wheatcroft-v-Keres-1939.mp4",
+    "sizeMb": 56.8,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Keres Put a Knight on a Square Two Rooks Were Attacking",
+    "status": "not_uploaded"
   }
 ]

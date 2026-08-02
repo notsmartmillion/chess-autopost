@@ -205,7 +205,12 @@ def _mention_highlights(beat: Dict[str, Any], clip: Dict[str, Any]) -> List[Dict
             if piece is None or piece.piece_type != _PIECE_BY_NAME[piece_name]:
                 continue
         seen.add(square)
-        out.append({"square": square, "atMs": at_ms})
+        entry: Dict[str, Any] = {"square": square, "atMs": at_ms}
+        if piece_name is None:
+            # Unverifiable by nature — the square is talked about, not
+            # occupied. Marked so the audit knows not to demand a piece there.
+            entry["focus"] = True
+        out.append(entry)
         # A reading-the-position beat can name ten squares; light the ones a
         # viewer can follow. Above six the board is a Christmas tree.
         if len(out) >= 6:

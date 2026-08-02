@@ -4,7 +4,13 @@
  * YouTube uploader CLI for chess autopost
  */
 
-import 'dotenv/config';
+import path from 'node:path';
+import dotenv from 'dotenv';
+// Same trap as authorize.ts: npm runs this from apps/uploader, and
+// `dotenv/config` only reads the .env in the working directory. The repo's
+// .env is at the root, so without this the uploader would report missing
+// Google credentials on a machine that has them.
+dotenv.config({ path: path.resolve(process.cwd(), '..', '..', '.env') });
 import { Command } from 'commander';
 import fs from 'fs/promises';
 import { uploadVideo, getVideoInfo, updateVideoMetadata, listVideos } from './youtube_client';

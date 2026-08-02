@@ -19,10 +19,19 @@
  *   4. Put its id and secret in .env as GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET.
  */
 
-import 'dotenv/config';
+import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 import { URL } from 'node:url';
+import dotenv from 'dotenv';
 import { google } from 'googleapis';
+
+// The repo's .env lives at the root, but npm runs this with apps/uploader as
+// the working directory and `dotenv/config` only looks there. That reported
+// "set GOOGLE_CLIENT_ID first" on a machine where it had been set all along —
+// a maddening thing to be told, and the reason this is explicit now.
+const ENV_PATH = path.resolve(process.cwd(), '..', '..', '.env');
+dotenv.config({ path: ENV_PATH });
 
 // Upload plus the read access the uploader uses to list recent videos for the
 // "More videos" block. Nothing broader: this token should not be able to
@@ -104,9 +113,24 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  console.log('\nAdd this line to your .env:\n');
-  console.log(`GOOGLE_REFRESH_TOKEN=${tokens.refresh_token}\n`);
-  console.log('Then check it works without publishing anything:');
+  // Written straight into .env rather than printed. A refresh token is a
+  // standing credential for the channel; echoing it to a terminal leaves it
+  // in scrollback and in any log that happens to be capturing stdout.
+  const envPath = ENV_PATH;
+  try {
+    const existing = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
+    const line = `GOOGLE_REFRESH_TOKEN=${tokens.refresh_token}`;
+    const next = /^GOOGLE_REFRESH_TOKEN=.*$/m.test(existing)
+      ? existing.replace(/^GOOGLE_REFRESH_TOKEN=.*$/m, line)
+      : existing.replace(/\s*$/, '\n') + line + '\n';
+    fs.writeFileSync(envPath, next, 'utf-8');
+    console.log(`\nAuthorised. Refresh token written to ${envPath}\n`);
+  } catch (e) {
+    console.error('\nAuthorised, but .env could not be written:', e);
+    console.error('Add the refresh token by hand — it is:');
+    console.error(`GOOGLE_REFRESH_TOKEN=${tokens.refresh_token}\n`);
+  }
+  console.log('Now check it works without publishing anything:');
   console.log('  python services/orchestrator/flow.py --dry-run-upload\n');
   return 0;
 }

@@ -152,6 +152,80 @@ def _short_name(full: Optional[str]) -> str:
     return name.split()[-1]
 
 
+# How the chess world writes a name, where the PGN header does not.
+#
+# Three separate problems, all real in this pool: a formal name nobody uses
+# ("Robert James Fischer" — people search Bobby), a transliteration that lost
+# the coin toss ("Mihail" for Mikhail), and headers carrying only an initial
+# ("Carlsen,M"). Small and hand-checked, like the quotation table: a wrong name
+# in a title is worse than a bare surname.
+COMMON_NAMES: Dict[str, str] = {
+    "fischer": "Bobby Fischer",
+    "tal": "Mikhail Tal",
+    "carlsen": "Magnus Carlsen",
+    "mamedyarov": "Shakhriyar Mamedyarov",
+    "botvinnik": "Mikhail Botvinnik",
+    "capablanca": "Jose Raul Capablanca",
+    "alekhine": "Alexander Alekhine",
+    "lasker": "Emanuel Lasker",
+    "kasparov": "Garry Kasparov",
+    "karpov": "Anatoly Karpov",
+    "petrosian": "Tigran Petrosian",
+    "korchnoi": "Viktor Korchnoi",
+    "bronstein": "David Bronstein",
+    "smyslov": "Vasily Smyslov",
+    "spassky": "Boris Spassky",
+    "keres": "Paul Keres",
+    "rubinstein": "Akiba Rubinstein",
+    "morphy": "Paul Morphy",
+    "nimzowitsch": "Aron Nimzowitsch",
+    "reti": "Richard Reti",
+    "steinitz": "Wilhelm Steinitz",
+    "euwe": "Max Euwe",
+    "anand": "Viswanathan Anand",
+    "kramnik": "Vladimir Kramnik",
+    "gukesh": "Gukesh Dommaraju",
+}
+
+
+def _surname_key(full: Optional[str]) -> str:
+    """The lowercase surname, for looking a player up."""
+    name = _clean(full) or ""
+    if not name:
+        return ""
+    first = name.split(",")[0].strip() if "," in name else name.split()[-1]
+    return re.sub(r"[^a-z]", "", first.lower())
+
+
+def full_name(raw: Optional[str]) -> str:
+    """The name to print in a title: given name plus surname, no middles.
+
+    PGN headers are a mess of patronymics, initials and truncations —
+    "Alexander Nikolaevi Chistiakov", "Heikki MJ Westerinen", "Fischer, Robert
+    James". Keeping only the FIRST given name fixes nearly all of it in one
+    rule; the exceptions where the world uses a different name entirely live
+    in COMMON_NAMES. Falls back to the surname when a header carries nothing
+    usable, which is better than printing an initial.
+    """
+    known = COMMON_NAMES.get(_surname_key(raw))
+    if known:
+        return known
+    name = _clean(raw)
+    if not name:
+        return "Unknown"
+    last, _, first = name.partition(",") if "," in name else (name, "", "")
+    surname = last.strip()
+    for part in first.split():
+        # Skip initials ("P", "MJ", "V.") and patronymics ("Vasilievich",
+        # "Nikolaevi" — the truncation ChessBase leaves behind).
+        if re.fullmatch(r"[A-Za-z]{1,2}\.?", part):
+            continue
+        if re.search(r"(?:vich|evich|ovich|evna|ovna|aevi|ievi)$", part, re.I):
+            continue
+        return f"{part} {surname}".strip()
+    return surname or "Unknown"
+
+
 def _display_name(full: Optional[str]) -> str:
     """"Tal, Mihail" -> "Mihail Tal";  "Bronstein, David I" -> "David Bronstein".
 
@@ -1660,7 +1734,10 @@ placed to describe it.
   name itself is the hook (Tal, Fischer, Kasparov, Spassky qualify). "He/She +
   extreme act" with the name held back often outdraws the name itself. No venue,
   no year, no "| Site 1986" suffix — those cost clicks. Never promise what the
-  game does not deliver.
+  game does not deliver. Name a player with BOTH names — "Mikhail Tal", not
+  "Tal": a surname alone is less recognisable to someone who does not yet know
+  the game, and nobody searches "Keres endgame" who would not have searched
+  "Paul Keres".
 - "hook": two or three sentences for the video description. Say what happens and why
   it is worth ten minutes, without spoiling the final move.
 - "thumb": the words printed on the thumbnail. THREE TO SIX WORDS, upper case, in
@@ -1910,7 +1987,7 @@ def narrate_with_llm(
     title = (obj.get("title") or "").strip()
     hook = (obj.get("hook") or "").strip()
     if title:
-        script["meta"]["llmTitle"] = title
+        script["meta"]["llmTitle"] = expand_title_names(title, script.get("meta") or {})
     if hook:
         script["meta"]["llmHook"] = hook
     thumb = _clean_thumb(obj.get("thumb"))
@@ -2002,6 +2079,41 @@ def apply_signoff(beats: List[Dict[str, Any]], signoff: str) -> None:
 # A word boundary on the left keeps "Na4" and "Rxa4" alone; those already read
 # correctly because the letter before the "a" stops it looking like an article.
 _A_FILE_SQUARE = re.compile(r"(?<![A-Za-z0-9])a([1-8])(?![a-z0-9])")
+
+
+def expand_title_names(title: str, meta: Dict[str, Any]) -> str:
+    """Give the players their full names in the title.
+
+    "Keres Put a Knight…" becomes "Paul Keres Put a Knight…". Titles are read
+    by people who do not yet know the game, and a surname alone is both less
+    recognisable and less searchable — nobody types "Keres endgame" who would
+    not have typed "Paul Keres".
+
+    Done after the model rather than by asking it, because asking produced a
+    surname about half the time. Left alone when the name is already expanded,
+    and abandoned rather than truncating if the result would break YouTube's
+    100-character limit.
+    """
+    if not title:
+        return title
+    out = title
+    for side in ("white", "black"):
+        raw = meta.get(side)
+        surname = (_clean(raw) or "").split(",")[0].strip() if raw else ""
+        if not surname or " " in surname:
+            continue
+        full = full_name(raw)
+        if not full or full.lower() == surname.lower():
+            continue
+        # Only a bare surname: never "Paul Paul Keres", never inside a word.
+        pattern = re.compile(
+            r"(?<![\w'])(?<!" + re.escape(full.split()[0]) + r"\s)"
+            + re.escape(surname) + r"(?![\w])"
+        )
+        candidate = pattern.sub(full, out, count=1)
+        if len(candidate) <= 100:
+            out = candidate
+    return out
 
 
 def repair_narration(beats: List[Dict[str, Any]]) -> None:

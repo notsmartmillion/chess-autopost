@@ -101,5 +101,47 @@
     "narration": "llm",
     "title": "Keres Put a Knight on a Square Two Rooks Were Attacking",
     "status": "not_uploaded"
+  },
+  {
+    "date": "2026-08-02",
+    "pgn": "2026-08-02_Juhnke_vs_Spassky.pgn",
+    "archive": "Juhnke-v-Spassky-1982.mp4",
+    "sizeMb": 44.7,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": null,
+    "status": "uploaded",
+    "videoId": null,
+    "url": null,
+    "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-02",
+    "pgn": "2026-08-02_Kurajica_vs_Fischer.pgn",
+    "archive": "Kurajica-v-Fischer-1970.mp4",
+    "sizeMb": 40.9,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": null,
+    "status": "uploaded",
+    "videoId": null,
+    "url": null,
+    "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-03",
+    "pgn": "2026-08-03_Keres_vs_Westerinen.pgn",
+    "archive": "Keres-v-Westerinen-1973.mp4",
+    "sizeMb": 46.3,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": null,
+    "status": "uploaded",
+    "videoId": null,
+    "url": null,
+    "privacy": "unlisted"
   }
 ]

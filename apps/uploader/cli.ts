@@ -103,7 +103,29 @@ https://youtu.be/${v.id.videoId}`);
       console.log('Video ID:', result.videoId);
       console.log('URL:', result.url);
       console.log('Status:', result.status);
-      
+
+      // The option existed but was never implemented, so flow.py's ledger —
+      // the permanent record of what this channel has published — recorded
+      // every upload with a null videoId, url and title. Three videos went up
+      // before anyone looked at the record and found it empty.
+      if (options.resultJson) {
+        await fs.writeFile(
+          options.resultJson,
+          JSON.stringify(
+            {
+              videoId: result.videoId,
+              url: result.url,
+              status: result.status,
+              title: uploadOptions.title,
+            },
+            null,
+            2
+          ),
+          'utf-8'
+        );
+        console.log('Result written to:', options.resultJson);
+      }
+
     } catch (error) {
       console.error('Upload failed:', error);
       process.exit(1);

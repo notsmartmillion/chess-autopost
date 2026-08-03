@@ -62,6 +62,9 @@ export interface ScriptMeta {
   narration?: 'llm' | 'template';
   opening?: { eco?: string | null; name?: string | null } | null;
   whitePortrait?: string | null;
+  /** Full names resolved by the director — the one source of truth. */
+  whiteFull?: string | null;
+  blackFull?: string | null;
   blackPortrait?: string | null;
   supportText?: string | null;
   /** Title + description hook written by the narration model. */

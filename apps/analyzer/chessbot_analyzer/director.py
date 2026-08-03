@@ -376,6 +376,10 @@ class Director:
                 "channel": self.channel_name,
                 "opening": facts.get("opening"),
                 "outcome": meta.get("outcome"),
+                # Resolved once here so the title, the thumbnail and the
+                # listing cannot disagree about what a player is called.
+                "whiteFull": full_name(meta.get("white")),
+                "blackFull": full_name(meta.get("black")),
                 "quote": quote,
             },
             "beats": beats,

@@ -1,7 +1,7 @@
 import React from 'react';
 import {AbsoluteFill, Img, staticFile} from 'remotion';
 import {AnimatedBoard} from '../components/AnimatedBoard';
-import {THEME, Wordmark} from '../components/AnalysisRail';
+import {THEME} from '../components/AnalysisRail';
 import type {Script} from '../types/script';
 
 export type ThumbnailProps = {
@@ -9,17 +9,39 @@ export type ThumbnailProps = {
   [key: string]: unknown;
 };
 
-const BOARD = 820;
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 /**
- * "Bronstein, David I" -> "David Bronstein".
+ * The channel's thumbnail, built from three findings rather than taste.
  *
- * PGN headers carry middle initials and Russian patronymics, often truncated
- * ("Chistiakov, Alexander Nikolaevi"). A lone capital I renders as a bare
- * vertical stroke and gets read as a pipe character, and broadcasts say
- * "David Bronstein" anyway — so bare initials are dropped.
+ * ONE FACE, NOT TWO. Seven players in the classics pool have no portrait at
+ * all, and two of the last three games hit one — the pool pairs a famous
+ * player against an obscure opponent, so a two-portrait layout shows a grey
+ * silhouette about half the time. Showing only the player we actually have,
+ * preferring the famous one, removes the failure rather than styling it.
+ *
+ * A BIGGER BOARD. The old design gave the board 820 of 1920 pixels, so at the
+ * ~360px a browsing viewer actually sees, each piece was about fourteen pixels
+ * — a texture, not a position. The board now runs full height.
+ *
+ * LESS TEXT. The old card carried a headline, both names, "versus" and an
+ * event line. At browse size that is four things competing to be unread.
  */
+
+/** The one player worth showing: whoever we have a face for, famous first. */
+const FAMOUS = new Set([
+  'tal', 'fischer', 'kasparov', 'carlsen', 'capablanca', 'alekhine', 'lasker',
+  'botvinnik', 'karpov', 'spassky', 'petrosian', 'morphy', 'rubinstein',
+  'keres', 'smyslov', 'bronstein', 'kramnik', 'anand', 'nimzowitsch',
+]);
+
+const surnameKey = (raw?: string | null): string => {
+  const v = (raw ?? '').trim();
+  if (!v) return '';
+  const first = v.includes(',') ? v.split(',')[0] : v.split(/\s+/).pop() ?? '';
+  return first.toLowerCase().replace(/[^a-z]/g, '');
+};
+
 const displayName = (raw?: string | null): string => {
   if (!raw) return 'Unknown';
   const v = raw.trim();
@@ -28,10 +50,10 @@ const displayName = (raw?: string | null): string => {
   const given = (first ?? '')
     .trim()
     .split(/\s+/)
-    .filter((part) => part && !/^[A-Za-z]\.?$/.test(part))
-    .join(' ');
+    .filter((p) => p && !/^[A-Za-z]{1,2}\.?$/.test(p))
+    .filter((p) => !/(?:vich|evich|ovich|aevi|ievi)$/i.test(p));
   const surname = (last ?? '').trim();
-  return (given ? `${given} ${surname}` : surname).trim() || 'Unknown';
+  return (given[0] ? `${given[0]} ${surname}` : surname).trim() || 'Unknown';
 };
 
 const year = (raw?: string | null): string | null => {
@@ -39,55 +61,19 @@ const year = (raw?: string | null): string | null => {
   return m ? m[1] : null;
 };
 
-/** One player's face, or nothing at all when we have no portrait for them. */
-const ThumbFace: React.FC<{src?: string | null; accent: string}> = ({src, accent}) =>
-  src ? (
-    <div
-      style={{
-        // Large enough to still read as a face at browse size: a YouTube
-        // thumbnail is shown around 360px wide, so anything under about 180px
-        // here arrives as a grey smudge rather than a person.
-        width: 196,
-        height: 250,
-        flexShrink: 0,
-        borderRadius: 8,
-        overflow: 'hidden',
-        boxShadow: `0 12px 34px rgba(0,0,0,0.55), 0 0 0 2px ${accent}66`,
-      }}
-    >
-      <Img
-        src={staticFile(`portraits/${src}`)}
-        style={{
-          width: '100%',
-          height: '100%',
-          objectFit: 'cover',
-          filter: 'grayscale(1) contrast(1.08)',
-        }}
-      />
-    </div>
-  ) : null;
-
-/**
- * YouTube thumbnail in the Analysis Deck style: the game's most dramatic
- * position on the left, a bold hook and the pairing on the right.
- */
 export const Thumbnail: React.FC<ThumbnailProps> = ({script}) => {
   const beats = script?.beats ?? [];
   const meta = script?.meta ?? {};
-
   const moves = beats.filter((b) => b.kind === 'move');
 
-  // Prefer an explicitly tagged moment, but never depend on one: at shallow
-  // engine depth a game can legitimately contain no blunders or brilliancies.
+  // The position worth showing: the sharpest tagged moment, else the biggest
+  // evaluation swing, else the finish.
   const priority = ['brilliant', 'blunder', 'great', 'mistake'];
   let hero = moves.find((b) => b.tag === priority[0]);
   for (const tag of priority.slice(1)) {
     if (hero) break;
     hero = moves.find((b) => b.tag === tag);
   }
-
-  // Fall back to the biggest evaluation swing — the turning point of the game.
-  let swingPawns = 0;
   if (!hero && moves.length > 1) {
     let best = moves[0];
     let bestDelta = 0;
@@ -99,64 +85,70 @@ export const Thumbnail: React.FC<ThumbnailProps> = ({script}) => {
       }
     }
     hero = best;
-    swingPawns = bestDelta / 100;
   }
   if (!hero) hero = moves[moves.length - 1];
 
-  const fen = hero?.fen ?? START_FEN;
-  const white = displayName(meta.white);
-  const black = displayName(meta.black);
-  const y = year(meta.date);
-  const winner =
-    meta.result === '1-0' ? white : meta.result === '0-1' ? black : null;
-
-  // The model saw the whole game and writes a line specific to it. The
-  // templates below are the safety net: they are generic by construction, so
-  // every brilliancy the channel ever posts would otherwise carry the same
-  // four words.
-  let hook: string;
-  if (meta.llmThumb) hook = meta.llmThumb;
-  else if (hero?.tag === 'brilliant') hook = 'THE MOVE\nNOBODY SAW';
-  else if (hero?.tag === 'blunder') hook = 'THE MOVE\nTHAT LOST IT';
-  else if (hero?.tag === 'great') hook = 'THE IDEA THAT\nDECIDED IT';
-  else if (hero?.tag === 'mistake') hook = 'THE MISTAKE\nTHAT COST IT';
-  else if (swingPawns >= 2) hook = 'THE MOMENT\nIT ALL TURNED';
-  else if (winner) hook = `HOW ${winner.split(' ').pop()?.toUpperCase()}\nWON THIS`;
-  else hook = 'A GAME WORTH\nSEEING';
+  // Which single face. Prefer the one the audience recognises; fall back to
+  // whichever we have; accept that sometimes we have neither.
+  const white = {raw: meta.white, portrait: meta.whitePortrait, key: surnameKey(meta.white)};
+  const black = {raw: meta.black, portrait: meta.blackPortrait, key: surnameKey(meta.black)};
+  const candidates = [white, black].filter((p) => p.portrait);
+  const star =
+    candidates.find((p) => FAMOUS.has(p.key)) ??
+    candidates.find((p) => surnameKey(meta.outcome?.winner === 'white' ? meta.white : meta.black) === p.key) ??
+    candidates[0];
 
   const accent =
-    hero?.tag === 'blunder' || hero?.tag === 'mistake' ? THEME.bad : THEME.accent;
+    hero?.tag === 'blunder' || hero?.tag === 'mistake' ? THEME.bad :
+    hero?.tag === 'brilliant' || hero?.tag === 'great' ? '#f2c14e' :
+    THEME.accent;
+
+  const hookRaw = meta.llmThumb ??
+    (hero?.tag === 'brilliant' ? 'THE MOVE\nNOBODY SAW'
+      : hero?.tag === 'blunder' ? 'THE MOVE\nTHAT LOST IT'
+      : 'A GAME WORTH\nSEEING');
+  const hook = hookRaw;
+
+  // With a face the board takes the left two-thirds; without one it runs
+  // wider and the text grows, because a thumbnail must never show the grey
+  // silhouette that a missing portrait used to produce.
+  const hasFace = Boolean(star?.portrait);
+  const BOARD = 1080;
+  const boardX = 0;
+  const faceW = 620;
+  // Resolved by the director, so the thumbnail cannot disagree with the title
+  // about whether he is Bobby or Robert James.
+  const whiteName = meta.whiteFull ?? displayName(meta.white);
+  const blackName = meta.blackFull ?? displayName(meta.black);
 
   return (
     <AbsoluteFill style={{background: THEME.bg0, fontFamily: 'Inter, "Segoe UI", system-ui, sans-serif'}}>
       <AbsoluteFill
         style={{
           background:
-            `radial-gradient(900px 640px at 24% 50%, ${accent}22, transparent 70%),` +
-            'radial-gradient(800px 600px at 88% 76%, rgba(178,140,255,0.10), transparent 70%)',
+            `radial-gradient(900px 700px at 20% 50%, ${accent}20, transparent 70%),` +
+            'radial-gradient(900px 700px at 85% 60%, rgba(178,140,255,0.10), transparent 70%)',
         }}
       />
 
-      <div style={{position: 'absolute', left: 74, top: 44}}>
-        <Wordmark name={meta.channel ?? 'Nocturne Chess'} />
-      </div>
-
+      {/* Board, full height and flush left. Brightened relative to the video:
+          a dark board on YouTube's dark grid recedes, and the thumbnail's only
+          job is to be seen in that grid. */}
       <div
         style={{
           position: 'absolute',
-          left: 74,
-          top: (1080 - BOARD) / 2 + 26,
+          left: boardX,
+          top: 0,
           width: BOARD,
           height: BOARD,
-          boxShadow: `0 24px 70px rgba(0,0,0,0.6), 0 0 0 1px ${THEME.panelEdge}`,
-          borderRadius: 8,
-          overflow: 'hidden',
+          filter: 'brightness(1.14) saturate(1.06)',
+          boxShadow: '24px 0 60px rgba(0,0,0,0.55)',
         }}
       >
         <AnimatedBoard
-          prevFen={fen}
-          fen={fen}
-          move={null}
+          prevFen={hero?.prevFen ?? hero?.fen ?? START_FEN}
+          fen={hero?.fen ?? START_FEN}
+          move={hero?.move ? {from: hero.move.from, to: hero.move.to} : null}
           size={BOARD}
           highlights={hero?.highlights ?? []}
           arrows={hero?.arrows ?? []}
@@ -166,53 +158,119 @@ export const Thumbnail: React.FC<ThumbnailProps> = ({script}) => {
         />
       </div>
 
+      {/* One portrait, full height, bled off the right edge. */}
+      {hasFace && (
+        <div
+          style={{
+            position: 'absolute',
+            right: 0,
+            top: 0,
+            width: faceW,
+            height: 1080,
+            overflow: 'hidden',
+          }}
+        >
+          <Img
+            src={staticFile(`portraits/${star!.portrait}`)}
+            style={{
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              objectPosition: 'center 22%',
+              filter: 'grayscale(1) contrast(1.12) brightness(1.05)',
+            }}
+          />
+          {/* Feather the inner edge so the face joins the board rather than
+              sitting in a box beside it. */}
+          <AbsoluteFill
+            style={{
+              // Wide and dark on purpose: the headline is laid over this, and
+              // white text on a face is unreadable at browse size however big
+              // its shadow.
+              background:
+                `linear-gradient(90deg, ${THEME.bg0} 0%, ${THEME.bg0}f2 32%, ` +
+                `${THEME.bg0}a6 56%, transparent 78%)`,
+            }}
+          />
+        </div>
+      )}
+
       <div
         style={{
           position: 'absolute',
-          left: 74 + BOARD + 80,
-          top: 250,
-          width: 1920 - (74 + BOARD + 80) - 74,
+          left: hasFace ? BOARD + 46 : BOARD + 70,
+          right: hasFace ? 300 : 90,
+          top: 0,
+          height: 1080,
+          display: 'flex',
+          flexDirection: 'column',
+          justifyContent: 'center',
+          gap: 26,
+          zIndex: 2,
         }}
       >
         <div
           style={{
-            // The model's line is short but not fixed-length, and the column is
-            // 872px wide. Size to the longest line so a three-word line of long
-            // words shrinks instead of running off the card.
             fontSize: Math.min(
-              96,
-              Math.round(1560 / Math.max(...hook.split('\n').map((l) => l.length), 1))
+              hasFace ? 76 : 104,
+              Math.round((hasFace ? 1150 : 1900) / Math.max(...hook.split('\n').map((l) => l.length), 1))
             ),
-            lineHeight: 1.06,
+            lineHeight: 1.04,
             fontWeight: 800,
             letterSpacing: -1,
             color: THEME.text,
             whiteSpace: 'pre-line',
+            textShadow: '0 6px 30px rgba(0,0,0,0.85)',
           }}
         >
           {hook}
         </div>
-        <div style={{height: 8, width: 150, background: accent, margin: '38px 0 34px', borderRadius: 4}} />
-
-        {/* Faces. A thumbnail with two people looking out of it is read as a
-            contest between them; the same thumbnail with only names on it is
-            read as a diagram. The portraits are already downloaded and
-            licensed for the video, so this costs nothing. */}
-        <div style={{display: 'flex', alignItems: 'center', gap: 26}}>
-          <ThumbFace src={meta.whitePortrait} accent={accent} />
-          <div style={{minWidth: 0}}>
-            <div style={{fontSize: 44, color: THEME.text, lineHeight: 1.3}}>{white}</div>
-            <div style={{fontSize: 26, color: THEME.muted, margin: '4px 0'}}>versus</div>
-            <div style={{fontSize: 44, color: THEME.text, lineHeight: 1.3}}>{black}</div>
-          </div>
-          <ThumbFace src={meta.blackPortrait} accent={accent} />
+        <div style={{height: 7, width: 120, background: accent, borderRadius: 4}} />
+        <div
+          style={{
+            fontSize: 36,
+            color: THEME.text,
+            lineHeight: 1.32,
+            textShadow: '0 4px 22px rgba(0,0,0,0.9)',
+          }}
+        >
+          {/* Stacked, not wrapped: "Karl Juhnke vs Boris / Spassky" breaks a
+              name across lines, which reads as a mistake. */}
+          <div>{whiteName}</div>
+          <div style={{fontSize: 25, color: THEME.muted, margin: '3px 0'}}>versus</div>
+          <div>{blackName}</div>
         </div>
-
-        {(meta.event || y) && (
-          <div style={{fontSize: 28, color: THEME.muted, marginTop: 26, letterSpacing: 1.2}}>
-            {[meta.event, y].filter(Boolean).join('  ·  ')}
+        {year(meta.date) && (
+          <div style={{fontSize: 30, color: THEME.muted, letterSpacing: 2}}>
+            {year(meta.date)}
           </div>
         )}
+      </div>
+
+      {/* The mark alone, not the wordmark. YouTube prints the channel name
+          under every thumbnail already, so spelling it out here spends pixels
+          on something the viewer is being told anyway — and the full lockup
+          was wide enough to sit across a piece in the corner. */}
+      <div
+        style={{
+          position: 'absolute',
+          left: 22,
+          top: 20,
+          zIndex: 3,
+          width: 56,
+          height: 56,
+          borderRadius: 15,
+          background: `linear-gradient(135deg, ${THEME.accent}, ${THEME.alt})`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 36,
+          color: THEME.bg0,
+          lineHeight: 1,
+          boxShadow: '0 6px 20px rgba(0,0,0,0.6)',
+        }}
+      >
+        ♞
       </div>
     </AbsoluteFill>
   );

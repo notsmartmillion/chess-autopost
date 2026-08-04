@@ -51,7 +51,8 @@ const displayName = (raw?: string | null): string => {
     .trim()
     .split(/\s+/)
     .filter((p) => p && !/^[A-Za-z]{1,2}\.?$/.test(p))
-    .filter((p) => !/(?:vich|evich|ovich|aevi|ievi)$/i.test(p));
+    .filter((p) => !/(?:vich|evich|ovich|aevi|ievi)$/i.test(p))
+    .filter((p) => !/\d/.test(p)); // "Didier, M1." — scanning debris
   const surname = (last ?? '').trim();
   return (given[0] ? `${given[0]} ${surname}` : surname).trim() || 'Unknown';
 };

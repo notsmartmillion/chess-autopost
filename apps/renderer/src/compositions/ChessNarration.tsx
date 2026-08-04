@@ -73,6 +73,9 @@ const displayName = (raw?: string | null): string => {
     .trim()
     .split(/\s+/)
     .filter((part) => part && !/^[A-Za-z]\.?$/.test(part))
+    // "Didier, M1." reached the intro card as "M1. Didier": a digit in a
+    // given name is scanning debris from the source database, never a name.
+    .filter((part) => !/\d/.test(part))
     .join(' ');
   const surname = (last ?? '').trim();
   return (given ? `${given} ${surname}` : surname).trim() || 'Unknown';
@@ -188,8 +191,14 @@ export const ChessNarration: React.FC<ChessNarrationProps> = ({
 
   const beat = current?.beat ?? beats[beats.length - 1];
   const isCard = beat.kind === 'intro' || beat.kind === 'outro';
-  const white = displayName(meta.white);
-  const black = displayName(meta.black);
+  // The director resolves each player's name once, for every surface — the
+  // title, the thumbnail, this card. The local derivation is only a fallback
+  // for scripts that predate whiteFull, because "M1. Didier" reached a
+  // published intro card through exactly this seam: the thumbnail used the
+  // resolved name while this component re-derived its own from the raw
+  // header.
+  const white = meta.whiteFull ?? displayName(meta.white);
+  const black = meta.blackFull ?? displayName(meta.black);
   const eventLine = [meta.event, prettyDate(meta.date)].filter(Boolean).join(' · ');
   const channel = meta.channel ?? 'Nocturne Chess';
 

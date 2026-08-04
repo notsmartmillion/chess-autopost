@@ -746,6 +746,237 @@ def _ease_seam_levels(
               f"worst {worst[0]:+.1f} -> {worst[1]:+.1f} dB")
 
 
+# What the voice should SAY for words it reads wrong. Applied only to the
+# string sent to the synthesis service — the written text is what alignment,
+# captions, cues and the screen all use, and the respellings are phonetically
+# close enough that forced alignment against the written form stays grounded.
+#
+# Two kinds of entry. Chess terms the model anglicises ("en passant" came out
+# "en passing"), and player names it reads a different way every take —
+# "Gelfand" alternated between a hard and soft G within one video, which a
+# viewer hears as the narrator not knowing who is on the board. A respelling
+# pins one reading. Names only go in this table with a pronunciation worth
+# pinning; a name absent here is simply read as written.
+SPOKEN_FORMS: Dict[str, str] = {
+    "en passant": "on passont",
+    "fianchetto": "fyanketto",
+    "fianchettoed": "fyankettoed",
+    "zugzwang": "tsoogzvung",
+    "zwischenzug": "tsvishenzoog",
+    "Ruy Lopez": "Rooey Lopez",
+    # Names. Keyed case-sensitively so ordinary words never match.
+    "Gelfand": "Ghelfand",       # hard G
+    "Anand": "Ahnand",           # AH-nand, never AY-nand
+    "Uhlmann": "Oolmun",
+    "Didier": "Deedyay",
+    "Geller": "Gheller",         # hard G
+    "Najdorf": "Nydorf",
+    "Euwe": "Ervuh",
+    "Keres": "Kerress",
+    "Petrosian": "Petrosyan",
+    "Smyslov": "Smislov",
+}
+_SPOKEN_RE = re.compile(
+    "|".join(
+        rf"(?<![\w']){re.escape(k)}(?![\w])"
+        for k in sorted(SPOKEN_FORMS, key=len, reverse=True)
+    )
+)
+_SPOKEN_CI = {k.lower(): v for k, v in SPOKEN_FORMS.items() if not k[0].isupper()}
+
+
+def _spoken_form(text: str) -> str:
+    """The text as the voice should read it. Terms match case-insensitively;
+    names match exactly, so 'geller' in prose could never be a surname."""
+    def sub(m: "re.Match[str]") -> str:
+        word = m.group(0)
+        exact = SPOKEN_FORMS.get(word)
+        if exact is not None:
+            return exact
+        lowered = _SPOKEN_CI.get(word.lower())
+        return lowered if lowered is not None else word
+
+    # Case-insensitive scan, case-sensitive decision: build one pass that
+    # sees "En passant" as well as "en passant".
+    pattern = re.compile(_SPOKEN_RE.pattern, re.IGNORECASE)
+    return pattern.sub(sub, text)
+
+
+def _fetch_primed(fetch, text: str, primer: str, dest: Path, label: str) -> None:
+    """Synthesize ``text`` as a continuation of ``primer``, primer cut away.
+
+    The one way this pipeline knows to make a take that does not cold-start.
+    Phase 1 inlines the same steps; re-rolls and rescues must go through here,
+    because a bare ``fetch(text)`` produces exactly the hot opening they are
+    trying to replace.
+    """
+    if primer:
+        full = primer + " " + text
+        dest.write_bytes(fetch(full, label))
+        _trim_lead_silence(dest)
+        cut = _primer_end(dest, primer, full)
+        if cut > 0:
+            _drop_head(dest, cut)
+            return
+    dest.write_bytes(fetch(text, label))
+    _trim_lead_silence(dest)
+
+
+def _audible_seam(prev: Path, cur: Path) -> Optional[Tuple[float, float]]:
+    """Measure one seam exactly the way the render audit will.
+
+    Same edge windows, same widening on unvoiced onsets, same thresholds as
+    verify_render.py — one definition of "will be heard as a new announcer",
+    shared by the pass that must fix it and the audit that must catch it.
+    Returns (dHz, dDb) when the seam fails, None when it passes.
+    """
+    def edge(path: Path, head: bool) -> Optional[float]:
+        for dur in (1.5, 2.5, 4.0):
+            v = _median_f0(path, 0.0 if head else -dur, dur if head else None)
+            if v:
+                return v
+        return None
+
+    p_tail, p_head = edge(prev, False), edge(cur, True)
+    l_tail, l_head = _level_db(prev, -1.5), _level_db(cur, 0.0, 1.5)
+    dp = (p_head - p_tail) if p_tail and p_head else 0.0
+    dl = (l_head - l_tail) if l_tail is not None and l_head is not None else 0.0
+    if abs(dp) > 60 or abs(dl) > 5 or (abs(dp) > 40 and abs(dl) > 3):
+        return dp, dl
+    return None
+
+
+def _rescue_stubborn_seams(
+    takes: Sequence[Tuple[Any, Path, str]], fetch, max_rolls: int = 3
+) -> None:
+    """Last line of defence: re-synthesize a take still opening an audible seam.
+
+    Every easing pass above is bounded — deliberately, because a large DSP
+    correction is itself audible — so a take synthesized far enough from its
+    neighbour arrives here untouched. 6:34 of Fischer–Uhlmann was +5 dB after
+    an easing pass that, by its own rules, had nothing it was allowed to do;
+    the audit failed the render and the pipeline uploaded it anyway. Gain can
+    only hide a mismatch that size. A different sample can remove it.
+
+    So: measure every seam with the audit's own arithmetic, and where one
+    still fails, ask the model for a fresh take — primed, on a different seed
+    — keeping whichever file leaves the smaller seam. Bounded at a few
+    requests, and whatever remains is printed in the audit's terms, so the log
+    explains the held upload rather than the other way round.
+    """
+    if len(takes) < 2 or not _ffmpeg():
+        return
+    paths = [p for _, p, _ in takes]
+    bodies = [_level_db(p) for p in paths]
+    pitches = [_median_f0(p) for p in paths]
+    lv = sorted(b for b in bodies if b is not None)
+    f0 = sorted(f for f in pitches if f)
+    if not lv or not f0:
+        return
+    med_l, med_f = lv[len(lv) // 2], f0[len(f0) // 2]
+
+    def oddness(j: int) -> float:
+        """How far take j sits from the video's own centre."""
+        d = 0.0
+        if bodies[j] is not None:
+            d += abs(bodies[j] - med_l) / 5.0
+        if pitches[j]:
+            d += abs(pitches[j] - med_f) / 60.0
+        return d
+
+    def badness(j: int) -> float:
+        """Summed audit-excess of the seams take j participates in.
+
+        Both of them — a fresh sample that closes the left seam by opening
+        the right one has fixed nothing.
+        """
+        total = 0.0
+        for a, b in ((j - 1, j), (j, j + 1)):
+            if a < 0 or b >= len(paths):
+                continue
+            seam = _audible_seam(paths[a], paths[b])
+            if seam:
+                dp, dl = seam
+                total += max(0.0, abs(dp) - 40) / 60 + max(0.0, abs(dl) - 3) / 5
+        return total
+
+    base_seed = os.getenv("TTS_SEED", "42").strip()
+    rolls = 0
+    rescued = False
+    attempts: Dict[int, int] = {}
+    for i in range(1, len(takes)):
+        # A while, not an if: a failed attempt leaves this seam audible, and
+        # the next attempt must go to the same seam on a different seed — the
+        # first version moved on after one roll, so its "second attempt"
+        # existed only for a take that happened to break two seams at once.
+        while rolls < max_rolls and _audible_seam(paths[i - 1], paths[i]):
+            # Re-roll whichever side is the stranger against the whole video:
+            # the seam only proves the two disagree, not which one is wrong.
+            j = i if oddness(i) >= oddness(i - 1) else i - 1
+            if attempts.get(j, 0) >= 2:
+                # Two fresh samples both worse is a signal, not bad luck; a
+                # third spends a request on a take the model keeps reading
+                # one way.
+                break
+            attempts[j] = attempts.get(j, 0) + 1
+            _, path, text = takes[j]
+            primer = _tail_sentence(takes[j - 1][2]) if j else WARMUP_PRIMER
+            fresh = path.with_suffix(".rescue.wav")
+            if base_seed not in ("", "-1"):
+                # A different seed per attempt — repeating one would reproduce
+                # the rejected sample byte for byte.
+                os.environ["TTS_SEED_OVERRIDE"] = str(
+                    int(base_seed) + 101 + j + 500 * (attempts[j] - 1))
+            try:
+                _fetch_primed(fetch, text, primer, fresh,
+                              f"seam rescue {path.stem}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[tts] seam rescue of {path.stem} failed ({exc})")
+                break
+            finally:
+                os.environ.pop("TTS_SEED_OVERRIDE", None)
+            rolls += 1
+            before = badness(j)
+            kept = path.with_suffix(".kept.wav")
+            path.replace(kept)
+            fresh.replace(path)
+            after = badness(j)
+            if after < before:
+                kept.unlink()
+                rescued = True
+                print(f"[tts] rescued {path.stem}: seam badness "
+                      f"{before:.2f} -> {after:.2f}")
+            else:
+                path.unlink()
+                kept.replace(path)
+                print(f"[tts] rescue of {path.stem} no better; "
+                      f"keeping the original")
+        if rolls >= max_rolls:
+            break
+
+    if rescued:
+        # A fresh take bypassed the easing passes; give its seams the same
+        # finishing every other take got. Both passes re-measure before they
+        # touch anything, so the already-eased majority is left alone.
+        _flatten_seams(paths)
+        _ease_seam_levels(paths)
+
+    remaining = []
+    for i in range(1, len(paths)):
+        seam = _audible_seam(paths[i - 1], paths[i])
+        if seam:
+            dp, dl = seam
+            remaining.append({"take": paths[i].stem, "dHz": round(dp),
+                              "dDb": round(dl, 1)})
+            print(f"[tts] seam into {paths[i].stem} still audible "
+                  f"({dp:+.0f} Hz, {dl:+.1f} dB) — the audit will fail it")
+    # Written even when empty: the file is how the build step learns the
+    # voice's fate before spending twenty-five minutes rendering it, and a
+    # stale verdict from the previous game would be worse than none.
+    (paths[0].parent / "unresolved_seams.json").write_text(
+        json.dumps(remaining), encoding="utf-8")
+
+
 def _median_f0(path: Path, start_s: float = 0.0, dur_s: Optional[float] = None) -> float:
     """Median voiced pitch of a clip (or a segment of it), by autocorrelation.
 
@@ -1192,10 +1423,16 @@ def _slow_fast_takes(takes: Sequence[Tuple[Any, Path, str]]) -> None:
         stretch = min(wpm / median, 1.0 + MAX_TEMPO_STRETCH)
         tmp = path.with_suffix(".slow.wav")
         try:
+            # atempo, not rubberband. The phase vocoder smears a solo voice
+            # into an audible double of itself — "the announcer overlaid on
+            # another of the same voice" was heard at 7:30 of a published
+            # video, in the one take the governor had stretched. atempo is
+            # time-domain overlap-add: at the few percent this pass applies,
+            # it slows speech without the chorus.
             subprocess.run(
                 [ff, "-y", "-hide_banner", "-loglevel", "error",
                  "-i", path.name,
-                 "-af", f"rubberband=tempo={1 / stretch:.5f}",
+                 "-af", f"atempo={1 / stretch:.5f}",
                  tmp.name],
                 cwd=str(path.parent), capture_output=True, check=True,
             )
@@ -1453,7 +1690,7 @@ def _ttsapi_synthesize(
     groups = merged
 
     def fetch(text: str, label: str) -> bytes:
-        payload = {"text": text, "voice": voice, "format": "wav"}
+        payload = {"text": _spoken_form(text), "voice": voice, "format": "wav"}
         # A fixed seed per request is the documented cure for Qwen3-TTS chunks
         # drifting in timbre. The service ignores the field until it supports
         # it, so this costs nothing to send today.
@@ -1586,6 +1823,11 @@ def _ttsapi_synthesize(
                     pen = seam_pen(i, p)
                     if whole or pen > 0.15:
                         candidates.append((i, f, c, pen))
+                # Worst first. The budget is four rolls, and taking the first
+                # four in video order spent them on mild early offenders while
+                # a +5 dB cliff at 6:34 waited fifth in line and shipped.
+                candidates.sort(key=lambda t: t[3] + dist(t[1], t[2]),
+                                reverse=True)
                 base_seed = os.getenv("TTS_SEED", "42").strip()
                 for i, f0, cen, pen in candidates[:4]:
                     group, para_path, text = takes[i]
@@ -1595,10 +1837,17 @@ def _ttsapi_synthesize(
                     if base_seed not in ("", "-1"):
                         os.environ["TTS_SEED_OVERRIDE"] = str(int(base_seed) + 1 + i)
                     try:
-                        fresh.write_bytes(fetch(text, f"re-roll {para_path.stem}"))
+                        # Primed like any take. This used to fetch the bare
+                        # text, so every re-roll cold-started — the exact
+                        # pathology priming exists to prevent, handed a second
+                        # chance at the very takes already flagged as odd.
+                        _fetch_primed(
+                            fetch, text,
+                            _tail_sentence(takes[i - 1][2]) if i else WARMUP_PRIMER,
+                            fresh, f"re-roll {para_path.stem}",
+                        )
                     finally:
                         os.environ.pop("TTS_SEED_OVERRIDE", None)
-                    _trim_lead_silence(fresh)
                     new_f0 = _median_f0(fresh)
                     new_cen = _centroid(fresh)
                     old_score = dist(f0, cen) + pen
@@ -1627,6 +1876,9 @@ def _ttsapi_synthesize(
     _trim_loud_takes([p for _, p, _ in takes])
     _flatten_seams([p for _, p, _ in takes])
     _ease_seam_levels([p for _, p, _ in takes])
+    # Closed loop: everything above nudges; this one re-measures with the
+    # audit's thresholds and re-synthesizes what nudging could not fix.
+    _rescue_stubborn_seams(takes, fetch)
 
     # --- phase 4: align and slice ---------------------------------------
     import wave

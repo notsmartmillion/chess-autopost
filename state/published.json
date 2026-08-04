@@ -297,5 +297,32 @@
     "videoId": "tB30o5o9XgM",
     "url": "https://www.youtube.com/watch?v=tB30o5o9XgM",
     "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-04",
+    "pgn": "2026-08-03_Fischer_vs_Uhlmann.pgn",
+    "archive": "Fischer-v-Uhlmann-1970-4.mp4",
+    "sizeMb": 46.0,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Bobby Fischer Sacrificed Two Pawns \u2014 Then a Pawn Ate the Queen",
+    "status": "held_audit",
+    "auditErrors": [
+      "[voice] 3 off-voice beats within 30s (b0064, b0068, b0071) \u2014 a stretch a viewer will hear as a different narrator"
+    ]
+  },
+  {
+    "archive": "Fischer-v-Uhlmann-1970-5.mp4",
+    "date": "2026-08-04",
+    "pgn": "2026-08-03_Fischer_vs_Uhlmann.pgn",
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "status": "uploaded",
+    "videoId": "fGhYFSy56Uo",
+    "url": "https://www.youtube.com/watch?v=fGhYFSy56Uo",
+    "title": "Bobby Fischer Sacrificed Two Pawns \u2014 Then a Pawn Ate the Queen",
+    "privacy": "unlisted"
   }
 ]

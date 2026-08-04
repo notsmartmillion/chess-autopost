@@ -255,6 +255,17 @@ def _detect_pins(board: chess.Board) -> List[Dict[str, Any]]:
         attacker_piece = (
             board.piece_at(chess.parse_square(attacker_name)) if attacker_name else None
         )
+        # A pin forbids leaving the ray — it does not forbid capturing the
+        # pinner. "The d7 pawn is pinned so it can't recapture" went out on a
+        # position where dxc6 was perfectly legal, because nothing downstream
+        # could tell these cases apart. Now it is a fact with a name.
+        can_take_pinner = False
+        if attacker_name and pinned_piece and pinned_piece.color == board.turn:
+            attacker_sq = chess.parse_square(attacker_name)
+            can_take_pinner = any(
+                m.from_square == pinned_sq and m.to_square == attacker_sq
+                for m in board.legal_moves
+            )
         out.append(
             {
                 "pinned": sq_name,
@@ -266,6 +277,7 @@ def _detect_pins(board: chess.Board) -> List[Dict[str, Any]]:
                 "attackerPiece": (
                     _piece_name(attacker_piece.piece_type) if attacker_piece else None
                 ),
+                "canCaptureAttacker": can_take_pinner,
             }
         )
     return out
@@ -1310,6 +1322,36 @@ def extract_facts(
                 is_sacrifice=bool(is_sacrifice),
             )
 
+            # What the engine's own move would have been graded, had it been
+            # played. The narration shows a branch for the road not taken only
+            # when that road was itself a brilliancy, and that judgement has to
+            # be made here — where "brilliant" is defined as the only move and
+            # a sacrifice — rather than guessed at from the exported numbers.
+            best_quality: Optional[str] = None
+            if best_pv and not played_best:
+                best_move = best_pv[0]
+                after_best = board_before.copy(stack=False)
+                try:
+                    after_best.push(best_move)
+                except Exception:  # pragma: no cover - defensive
+                    after_best = None
+                if after_best is not None:
+                    best_sacrifice = _safe(
+                        "best-sacrifice",
+                        lambda: _is_sacrifice(board_before, best_move, after_best, 0),
+                        False,
+                    )
+                    best_quality = _classify_quality(
+                        ply=ply,
+                        in_book=in_book,
+                        # By construction the engine's move loses nothing and
+                        # is the move it would have played.
+                        cp_loss=0,
+                        played_best=True,
+                        only_move=only_move,
+                        is_sacrifice=bool(best_sacrifice),
+                    )
+
             # ---- features & threats -----------------------------------------
             features = _compute_features(board, ply=ply, castled=dict(castled))
             threats = _safe(
@@ -1334,6 +1376,13 @@ def extract_facts(
                     "isMate": bool(board.is_checkmate()),
                     "isStalemate": bool(board.is_stalemate()),
                     "isCastle": is_castle,
+                    # Named so the narration can use the term of art. Left to
+                    # infer it, the model wrote "pawn takes g6 in passing" —
+                    # phrasing no chess viewer uses.
+                    "isEnPassant": bool(
+                        is_capture and captured_piece == "pawn"
+                        and board_before.is_en_passant(move)
+                    ),
                     "promotion": _piece_name(move.promotion) if move.promotion else None,
                     "evalBeforeCp": eval_before_cp,
                     "evalAfterCp": eval_after_cp,
@@ -1344,6 +1393,9 @@ def extract_facts(
                     "playedBest": bool(played_best),
                     "isSacrifice": bool(is_sacrifice),
                     "quality": quality,
+                    # The grade the engine's move would have earned. None when
+                    # the engine's move is the one that was played.
+                    "bestQuality": best_quality,
                     "bestMoveSan": best_pv_san[0] if best_pv_san else None,
                     "bestMoveUci": best_pv_uci[0] if best_pv_uci else None,
                     "bestPvSan": best_pv_san,

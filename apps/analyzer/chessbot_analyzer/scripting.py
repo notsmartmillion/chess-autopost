@@ -76,7 +76,7 @@ class ScriptGenerator:
                 else:
                     continue
             else:
-                logger.warning("unknown scene type: %s", t)
+                logger.warning(f"unknown scene type: {t}")
                 continue
 
             if text:

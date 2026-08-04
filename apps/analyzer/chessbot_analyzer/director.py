@@ -222,6 +222,10 @@ def full_name(raw: Optional[str]) -> str:
             continue
         if re.search(r"(?:vich|evich|ovich|evna|ovna|aevi|ievi)$", part, re.I):
             continue
+        # A digit in a given name is scanning debris, not a name: the Paris
+        # 1900 collection carries "Didier, M1." — nobody is called M1.
+        if any(ch.isdigit() for ch in part):
+            continue
         return f"{part} {surname}".strip()
     return surname or "Unknown"
 
@@ -240,6 +244,8 @@ def _display_name(full: Optional[str]) -> str:
     given = " ".join(
         part for part in first.split()
         if part and not re.fullmatch(r"[A-Za-z]\.?", part)
+        # "Didier, M1." — scanning debris is neither spoken nor shown.
+        and not any(ch.isdigit() for ch in part)
     )
     surname = last.strip()
     return (f"{given} {surname}".strip() if given else surname) or "Unknown"
@@ -339,11 +345,9 @@ class Director:
                 continue
 
             quality = ply.get("quality")
-            if quality in ("brilliant", "great") and ply.get("alternatives"):
-                # Explain the brilliancy by refuting the natural alternative.
-                var_beats = self._refutation_beats(ply)
-            else:
-                var_beats = self._variation_beats(ply)
+            # Always the road not taken. A played brilliancy never gets here —
+            # see _deserves_variation.
+            var_beats = self._variation_beats(ply)
 
             if var_beats:
                 beats.extend(var_beats)
@@ -651,11 +655,14 @@ class Director:
                 deficit -= add
         grown = sum(int(b["targetWords"]) for b in spoken)
         if grown != total:
+            # f-string, not %-args: the logger is loguru, which formats with
+            # str.format and silently drops printf-style arguments — these
+            # lines were reaching the log with their placeholders intact.
             logger.info(
-                "director: writing budget %d -> %d words "
-                "(~%.1f -> ~%.1f min, aiming at %.1f)",
-                total, grown, total / WORDS_PER_MINUTE,
-                grown / WORDS_PER_MINUTE, self.target_minutes,
+                f"director: writing budget {total} -> {grown} words "
+                f"(~{total / WORDS_PER_MINUTE:.1f} -> "
+                f"~{grown / WORDS_PER_MINUTE:.1f} min, "
+                f"aiming at {self.target_minutes:.1f})"
             )
 
     def _move_word_budget(
@@ -712,8 +719,10 @@ class Director:
         about four the viewer is being shown homework. Two to four is the
         band; a quiet game with only one real error gets one.
         """
-        SEVERITY = {"blunder": 100, "mistake": 60, "brilliant": 55, "great": 45,
-                    "inaccuracy": 20}
+        # Keyed on the quality of the move that was PLAYED. "brilliant" and
+        # "great" are absent on purpose: a brilliancy that was played gets no
+        # branch at all, so it can never be ranked here.
+        SEVERITY = {"blunder": 100, "mistake": 60, "inaccuracy": 20}
         ranked: List[Tuple[float, int, str]] = []
         for ply in plies:
             key_moment = key_by_ply.get(ply["ply"])
@@ -725,6 +734,10 @@ class Director:
             # is as worth stopping for.
             if ply.get("mateBefore") is not None and ply.get("mateAfter") is None:
                 score += 120
+            # A brilliancy that was available and not found. Rare, and the best
+            # thing a variation can show, so it outranks a plain blunder.
+            if ply.get("bestQuality") == "brilliant":
+                score += 80
             cp_loss = ply.get("cpLoss")
             if isinstance(cp_loss, (int, float)):
                 score += min(float(cp_loss), 400) / 10.0
@@ -749,108 +762,44 @@ class Director:
                 break
         if ranked:
             logger.info(
-                "director: %d plies deserve a variation, showing %d "
-                "(cap %d)", len(ranked), len(chosen), self.max_variations
+                f"director: {len(ranked)} plies deserve a variation, "
+                f"showing {len(chosen)} (cap {self.max_variations})"
             )
         return chosen
 
     def _deserves_variation(self, ply: Dict[str, Any], key_moment: Optional[Dict[str, Any]]) -> bool:
-        """Show a branch when it teaches something — an error, or a refutation."""
+        """Show a branch when it teaches something — a road not taken.
+
+        Nothing is branched off a brilliancy that was actually played. The
+        move is the payoff; cutting from it to an inferior line the viewer
+        never considered takes the drama back out. Fischer-Uhlmann shipped
+        with exactly that — a brilliant pawn thrust followed by a quiet king
+        move "he could have played instead" — and it read as a fault in the
+        render rather than as analysis.
+
+        The mirror case is the one worth stopping for: a brilliancy that was
+        *missed*. There the branch shows something that never happened and
+        should have, which is the whole reason to leave the game for a moment.
+        """
         quality = ply.get("quality")
         has_pv = bool(ply.get("bestPvSan"))
+        missed_it = has_pv and not ply.get("playedBest")
 
         # A missed forced mate is always worth showing.
         if ply.get("mateBefore") is not None and ply.get("mateAfter") is None and has_pv:
             return True
+        # The move he did not play would itself have been brilliant.
+        if ply.get("bestQuality") == "brilliant" and missed_it:
+            return True
+        if quality in ("brilliant", "great"):
+            return False
         if quality in ("blunder", "mistake"):
-            return has_pv and not ply.get("playedBest")
+            return missed_it
         # A costly inaccuracy at a moment the engine flagged as important.
         if quality == "inaccuracy" and key_moment and has_pv and not ply.get("playedBest"):
             cp_loss = ply.get("cpLoss")
             return isinstance(cp_loss, (int, float)) and cp_loss >= 80
-        # A brilliancy is worth explaining by showing what the alternative loses to.
-        if quality in ("brilliant", "great") and ply.get("alternatives"):
-            return True
         return False
-
-    def _refutation_beats(self, ply: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """"If instead X, then…" — show why the runner-up move fails."""
-        alts = ply.get("alternatives") or []
-        if not alts:
-            return []
-        alt = alts[0]
-        full_pv = list(alt.get("pvSan") or [])
-        pv_san = full_pv[: self._variation_depth(ply.get("fenBefore") or "", full_pv)]
-        if not pv_san:
-            return []
-
-        try:
-            board = chess.Board(ply["fenBefore"])
-        except Exception:
-            return []
-
-        label = f"If instead {pv_san[0]}"
-        beats: List[Dict[str, Any]] = []
-        for idx, san in enumerate(pv_san):
-            prev_fen = board.fen()
-            try:
-                move = board.parse_san(san)
-            except Exception:
-                break
-            spoken = self._spoken_san(san, board)
-            frm = chess.square_name(move.from_square)
-            to = chess.square_name(move.to_square)
-            board.push(move)
-
-            if idx == 0:
-                text = self.rng.choice([
-                    f"It is worth seeing why the natural {spoken} does not work.",
-                    f"Suppose instead {spoken}.",
-                    f"What happens after {spoken}?",
-                ])
-            else:
-                text = self.rng.choice([
-                    f"Then {spoken}",
-                    f"There follows {spoken}",
-                    f"Now {spoken}",
-                ])
-
-            beats.append(
-                self._beat(
-                    kind="variation",
-                    text=text,
-                    prevFen=prev_fen,
-                    fen=board.fen(),
-                    move={"from": frm, "to": to, "san": san},
-                    branch=True,
-                    label=label,
-                    highlights=[{"square": frm, "kind": "alt"}, {"square": to, "kind": "alt"}],
-                    checkSquare=self._check_square(board),
-                    evalCp=self._alt_eval_cp(alt, ply),
-                    ply=ply.get("ply"),
-                    # A variation line is spoken the same way, so it needs
-                    # the same verb fallback when the square is not named.
-                    moveCueWords=([to] + list(CAPTURE_CUES) if "x" in san else [to]),
-                )
-            )
-
-        if beats:
-            verdict = self._refutation_verdict(alt, ply)
-            beats[-1]["text"] = beats[-1]["text"].rstrip(".") + f", {verdict}"
-        return beats
-
-    def _refutation_verdict(self, alt: Dict[str, Any], ply: Dict[str, Any]) -> str:
-        if alt.get("mate") is not None:
-            return "and the attack crashes through"
-        best = ply.get("evalBeforeCp")
-        alt_cp = alt.get("cp")
-        if isinstance(best, (int, float)) and isinstance(alt_cp, (int, float)):
-            gap = abs(best - alt_cp) / 100.0
-            if gap >= 4:
-                return "and the position simply falls apart"
-            if gap >= 2:
-                return "and the advantage is gone"
-        return "and the whole idea breaks down"
 
     def _alt_eval_cp(self, alt: Dict[str, Any], ply: Dict[str, Any]) -> Optional[int]:
         """Alternative-line eval, normalised to White POV."""
@@ -900,7 +849,7 @@ class Director:
         try:
             board = chess.Board(ply["fenBefore"])
         except Exception:
-            logger.warning("variation skipped: bad fenBefore at ply %s", ply.get("ply"))
+            logger.warning(f"variation skipped: bad fenBefore at ply {ply.get('ply')}")
             return []
 
         best_san = pv_san[0]
@@ -1082,10 +1031,24 @@ class Director:
 
         for pin in (features.get("pins") or [])[:1]:
             if pin.get("pinned"):
-                out.append(
-                    f"The {pin.get('pinnedPiece') or 'piece'} on {pin['pinned']} is pinned "
-                    "and cannot step aside."
+                # Say only what the board proves. "Pinned and cannot step
+                # aside" was handed to the narrator, who reasonably extended
+                # it to "cannot recapture" — on a position where the pinned
+                # pawn could legally take the pinning bishop. A pin stops a
+                # piece leaving the line; it never stops it capturing the
+                # pinner, and when that capture is legal the fact says so.
+                line = (
+                    f"The {pin.get('pinnedPiece') or 'piece'} on {pin['pinned']} "
+                    f"is pinned to the king"
                 )
+                if pin.get("attackerPiece") and pin.get("attacker"):
+                    line += f" by the {pin['attackerPiece']} on {pin['attacker']}"
+                if pin.get("canCaptureAttacker"):
+                    line += (
+                        ". It can still capture the pinning piece; "
+                        "never say it cannot take or recapture"
+                    )
+                out.append(line + ".")
 
         for ray in sorted(features.get("longRays") or [], key=lambda r: -int(r.get("length") or 0))[:1]:
             if int(ray.get("length") or 0) >= 4 and ray.get("hits"):
@@ -1521,7 +1484,13 @@ class Director:
             pinned_piece = pin.get("pinnedPiece") or "piece"
             pinned_sq = pin.get("pinned")
             if pinned_sq:
-                out.append(f"Notice the {pinned_piece} on {pinned_sq} is pinned and cannot move")
+                # Same discipline as the LLM fact line: a pin ties a piece to
+                # the king's line — it does not make the piece immobile, and
+                # it never forbids capturing the pinner.
+                out.append(
+                    f"Notice the {pinned_piece} on {pinned_sq} is pinned "
+                    "to the king"
+                )
 
         for ray in sorted(features.get("longRays") or [], key=lambda r: -int(r.get("length") or 0))[:1]:
             if int(ray.get("length") or 0) >= 4 and ray.get("hits"):
@@ -1632,6 +1601,14 @@ outs — a defender, a block, a counter-attack — so write "should move", "want
 to move", "is being asked a question" unless the facts say otherwise. One
 false "must" costs more credibility than fifty accurate hedges.
 
+PINS DO NOT FORBID CAPTURES. A pinned piece cannot LEAVE the line between it
+and its king — but capturing the pinning piece itself is almost always legal,
+because the capture removes the attacker. Never write "pinned, so it can't
+take" or "can't do the recapturing" from a pin fact alone: say the piece is
+tied to the king, or that moving away would expose the king. If the pin fact
+says the piece can capture the pinner, treating that capture as impossible is
+exactly the mistake your audience will pause the video to point out.
+
 RHYTHM DEVICES — use all of these across the video:
 - Question then answer. THIS IS NOT OPTIONAL AND IT IS THE MOST OFTEN IGNORED RULE HERE.
   A question makes the listener lean in and, spoken aloud, lifts the voice instead of
@@ -1702,6 +1679,9 @@ FACTS ARE LAW:
   is on the board instead.
 - A "longRays" entry ends at the piece it hits. The line stops there — do not
   describe it as sweeping past that piece or reaching the far side of the board.
+- A move with "isEnPassant" true is called "en passant" — the term every chess
+  viewer knows. Never translate it ("in passing", "passing capture"); one such
+  translation shipped and was heard as the narrator not knowing the rule.
 
 OTHER RULES:
 - Spoken aloud: no markdown, no lists, no symbols, no move numbers like "12.".
@@ -1766,6 +1746,11 @@ def _compact_beat_for_llm(beat: Dict[str, Any], ply_facts: Optional[Dict[str, An
     }
     if beat.get("move"):
         out["move"] = beat["move"]["san"]
+    if ply_facts and ply_facts.get("isEnPassant"):
+        # As a field the model skated past it and wrote around the term. As an
+        # instruction in the beat itself, it names the move.
+        out["isEnPassant"] = True
+        out["note"] = 'This capture is en passant — say "en passant" by name.'
     if beat.get("label"):
         out["label"] = beat["label"]
     if beat.get("evalCp") is not None:
@@ -2097,24 +2082,43 @@ def expand_title_names(title: str, meta: Dict[str, Any]) -> str:
     surname about half the time. Left alone when the name is already expanded,
     and abandoned rather than truncating if the result would break YouTube's
     100-character limit.
+
+    Any given names already on the title are swallowed by the replacement
+    rather than left standing. The model is shown the PGN header, so it
+    sometimes writes the formal name from it — and a rule that only guarded
+    against repeating the *same* first name published "Robert James Bobby
+    Fischer Threw Two Pawns Away". Whatever the title calls him going in, it
+    calls him what the channel calls him coming out.
     """
     if not title:
         return title
     out = title
     for side in ("white", "black"):
         raw = meta.get(side)
-        surname = (_clean(raw) or "").split(",")[0].strip() if raw else ""
+        cleaned = _clean(raw) or ""
+        surname = cleaned.split(",")[0].strip() if raw else ""
         if not surname or " " in surname:
             continue
         full = full_name(raw)
         if not full or full.lower() == surname.lower():
             continue
-        # Only a bare surname: never "Paul Paul Keres", never inside a word.
-        pattern = re.compile(
-            r"(?<![\w'])(?<!" + re.escape(full.split()[0]) + r"\s)"
-            + re.escape(surname) + r"(?![\w])"
+        # Every given name this player might be introduced by: the header's
+        # own ("Robert", "James") and the one we settled on ("Bobby").
+        givens = {
+            w for w in re.split(r"[\s.]+", cleaned.partition(",")[2]) if w
+        } | set(full.split()[:-1])
+        alts = "|".join(
+            re.escape(w) for w in sorted(givens, key=len, reverse=True)
         )
-        candidate = pattern.sub(full, out, count=1)
+        prefix = rf"(?:(?:{alts})\s+)*" if alts else ""
+        # Only a whole name, never inside a word. A trailing "'s" is left in
+        # place, so "Fischer's Queen" becomes "Bobby Fischer's Queen".
+        pattern = re.compile(
+            r"(?<![\w'])" + prefix + re.escape(surname) + r"(?![\w])"
+        )
+        # A lambda, not the string: re.sub reads backslashes in a replacement
+        # as group references, and a name is data.
+        candidate = pattern.sub(lambda _m: full, out, count=1)
         if len(candidate) <= 100:
             out = candidate
     return out

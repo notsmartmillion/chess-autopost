@@ -654,6 +654,7 @@ def main() -> int:
         if b.get("text")
     ]
     print(f"[voice] synthesizing {len(lines)} lines (backend={args.tts})…")
+    (AUDIO_DIR / "unresolved_seams.json").unlink(missing_ok=True)
     manifest = synthesize(lines, AUDIO_DIR, backend=args.tts)
     print(f"[voice] backend={manifest['backend']} ext={manifest['ext']}")
 
@@ -674,6 +675,29 @@ def main() -> int:
               "did not answer. Start it and run this again,")
         print("[voice] or pass --allow-fallback-voice to render anyway.")
         return 3
+
+    # The seam rescue records what it could not fix. A seam it reports is a
+    # seam the post-render audit will fail, so rendering first would spend
+    # twenty-five minutes producing a video the pipeline then refuses to
+    # upload — that exact sequence happened twice in one night. Stop here;
+    # exit 4 tells flow.py this is a re-drawable synthesis failure, not a
+    # broken build.
+    seams_marker = AUDIO_DIR / "unresolved_seams.json"
+    if seams_marker.exists() and os.getenv("TTS_ALLOW_SEAMS", "").strip() != "1":
+        try:
+            unresolved = json.loads(seams_marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            unresolved = []
+        if unresolved:
+            print(f"\n[voice] ERROR: {len(unresolved)} seam(s) the rescue "
+                  "could not close:")
+            for s in unresolved:
+                print(f"[voice]   into {s.get('take')}: {s.get('dHz'):+} Hz, "
+                      f"{s.get('dDb'):+} dB")
+            print("[voice] stopping before the render — a fresh synthesis "
+                  "draw usually passes (set TTS_ALLOW_SEAMS=1 to render "
+                  "anyway).")
+            return 4
 
     if apply_think_pauses(script, manifest):
         (OUT / "audio_manifest.json").write_text(

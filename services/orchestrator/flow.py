@@ -25,7 +25,7 @@ import shutil
 import sys
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Windows consoles default to cp1252; make unicode-safe before any printing.
 for _stream in (sys.stdout, sys.stderr):
@@ -450,6 +450,43 @@ def upload_video(privacy: str, dry_run: bool = False) -> Optional[Dict]:
     return {}
 
 
+def audit_render(pgn_path: Path) -> Tuple[int, List[str]]:
+    """Run the render audit; return (total errors, voice error messages).
+
+    The audit existed for five renders before anything read its verdict: the
+    Fischer–Uhlmann upload went out with a seam the report had already called
+    "will be heard as a new announcer". Only the voice section blocks — those
+    errors describe what a viewer hears — while the rest still print, because
+    some checks compare against state outside the render itself.
+    """
+    report = OUT / "audit_report.json"
+    report.unlink(missing_ok=True)
+    cmd = [
+        sys.executable,
+        str(ROOT / "services" / "orchestrator" / "verify_render.py"),
+        "--pgn", str(pgn_path),
+        "--json", str(report),
+    ]
+    log("auditing the render…")
+    proc = subprocess.run(cmd, cwd=str(ROOT))
+    try:
+        rows = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # No report is not a clean bill of health. Fail closed, quietly
+        # enough that a crashed audit cannot masquerade as a bad voice.
+        log("audit produced no report; treating as failed")
+        return (max(proc.returncode, 1), ["render audit crashed before reporting"])
+    blocking = [
+        f"[{r.get('section')}] {r['message']}" for r in rows
+        # voice: what a viewer hears as a new announcer. claims: a spoken
+        # chess statement the board proves false. Both are the channel's
+        # credibility; neither is a style call.
+        if r.get("level") == "ERROR" and r.get("section") in ("voice", "claims")
+    ]
+    total = sum(1 for r in rows if r.get("level") == "ERROR")
+    return total, blocking
+
+
 def notify(text: str) -> None:
     url = os.getenv("SLACK_WEBHOOK_URL")
     if not url:
@@ -481,6 +518,8 @@ def main() -> int:
     ap.add_argument("--no-llm", action="store_true", help="Skip LLM narration polish")
     ap.add_argument("--privacy", default=os.getenv("YOUTUBE_PRIVACY", "unlisted"),
                     choices=["public", "unlisted", "private"])
+    ap.add_argument("--skip-audit", action="store_true",
+                    help="Upload even when the render audit fails the voice")
     args = ap.parse_args()
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -506,12 +545,44 @@ def main() -> int:
         extra += ["--depth", str(args.depth)]
     if args.no_llm:
         extra.append("--no-llm")
-    try:
-        build_video(pgn_path, tts=args.tts, extra=extra)
-    except subprocess.CalledProcessError as e:
-        log(f"ERROR: build/render failed with exit code {e.returncode}")
-        notify(f"Chess autopost: FAILED at build/render ({pgn_path.name}).")
-        return e.returncode
+    # Exit 4 is the voice stage refusing to render seams the rescue could not
+    # close. Synthesis is a fresh draw every time — the same command produced
+    # a passing voice on its second run twice in two days — so a redraw is
+    # the correct response, and it costs ten minutes instead of the forty a
+    # render-then-hold used to. Narration is reused: the words were fine, the
+    # reading was not.
+    if args.skip_audit:
+        os.environ["TTS_ALLOW_SEAMS"] = "1"
+    voice_draws = 3
+    base_seed = os.getenv("TTS_SEED", "42").strip() or "42"
+    for attempt in range(1, voice_draws + 1):
+        try:
+            retry_extra = list(extra)
+            if attempt > 1 and "--reuse-narration" not in retry_extra:
+                retry_extra.append("--reuse-narration")
+            # A different base seed per draw. Seeded synthesis is deterministic
+            # for the same text, and a retry reuses the narration — so without
+            # this, "re-drawing the synthesis" replayed the identical failing
+            # audio three times, byte for byte, and gave up. Observed live:
+            # draw 2's seam report matched draw 1's to the decimal.
+            if base_seed != "-1" and attempt > 1:
+                os.environ["TTS_SEED"] = str(int(base_seed) + 10_000 * (attempt - 1))
+            build_video(pgn_path, tts=args.tts, extra=retry_extra)
+            break
+        except subprocess.CalledProcessError as e:
+            if e.returncode == 4 and attempt < voice_draws:
+                log(f"voice draw {attempt}/{voice_draws} had unfixable seams; "
+                    "re-drawing the synthesis…")
+                continue
+            if e.returncode == 4:
+                log(f"ERROR: {voice_draws} voice draws all failed the seam "
+                    "check; giving up on today's game")
+                notify(f"Chess autopost: FAILED — {voice_draws} voice draws "
+                       f"all had audible seams ({pgn_path.name}).")
+            else:
+                log(f"ERROR: build/render failed with exit code {e.returncode}")
+                notify(f"Chess autopost: FAILED at build/render ({pgn_path.name}).")
+            return e.returncode
 
     if not VIDEO_PATH.exists():
         log("ERROR: render reported success but video.mp4 is missing")
@@ -558,6 +629,25 @@ def main() -> int:
                 "not uploading a fallback-voice render")
             notify(f"Chess autopost: rendered with fallback voice '{backend}'; upload held.")
             entry["status"] = "held_fallback_voice"
+            record_publication(entry)
+            return 1
+
+    # Audit before upload. A render that fails the voice checks reads as a
+    # different announcer mid-video; one that fails the claims checks tells
+    # the audience something the board disproves. Either stays on disk for a
+    # human, but does not publish itself at three in the morning.
+    if not args.no_upload and have_upload_creds() and not args.skip_audit:
+        _, blocking_errors = audit_render(pgn_path)
+        if blocking_errors:
+            for msg in blocking_errors:
+                log(f"AUDIT: {msg}")
+            log("upload held: the audit found blocking errors "
+                "(review the render, then rerun with --skip-audit to "
+                "publish it anyway)")
+            notify(f"Chess autopost: render OK but audit FAILED "
+                   f"({pgn_path.name}); upload held.")
+            entry["status"] = "held_audit"
+            entry["auditErrors"] = blocking_errors
             record_publication(entry)
             return 1
 

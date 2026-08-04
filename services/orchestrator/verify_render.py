@@ -397,6 +397,52 @@ def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) 
     if lies:
         rep.error("narration", f"claim contradicts the engine in {sorted(set(lies))[:5]}")
 
+    # "It can't recapture" is a legality claim, and legality is checkable.
+    # Shipped live: "the d7 pawn is pinned against its own king, so it can't
+    # do the recapturing" — spoken over a position where dxc6 was legal. A pin
+    # forbids leaving the line, never capturing the pinner. Every spoken
+    # impossibility about a capture is now checked against the move list; a
+    # chess audience pauses the video for exactly this. Filed under its own
+    # section because these errors block uploads, and the narration section
+    # mixes fact checks with style checks that should not.
+    cap_claim = re.compile(
+        r"\b(?:can't|cannot|can ?not|no way to|unable to)\b[^.!?]{0,60}?"
+        r"\b(?:recaptur\w*|captur\w*|take|takes|taking|taken)\b"
+        # A quantified object is a different claim entirely: "cannot take
+        # everything" says the offers outnumber the captures — true and good
+        # commentary when four pieces hang at once — not that any one capture
+        # is illegal. The gate held a correct video over exactly this.
+        r"(?!\s+(?:everything|all\b|both\b|them\s+all\b|every\b))", re.I)
+    piece_words = {"queen": chess.QUEEN, "rook": chess.ROOK, "bishop": chess.BISHOP,
+                   "knight": chess.KNIGHT, "pawn": chess.PAWN, "king": chess.KING}
+    for beat in beats:
+        move = beat.get("move") or {}
+        fen = beat.get("fen")
+        if not move.get("to") or not _legal_fen(fen):
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", beat["text"]):
+            m = cap_claim.search(sentence)
+            if not m:
+                continue
+            board = chess.Board(fen)
+            target = chess.parse_square(move["to"])
+            named = re.search(r"\b(queen|rook|bishop|knight|pawn|king)\b",
+                              sentence[: m.start()], re.I)
+            want = piece_words.get(named.group(1).lower()) if named else None
+            for lm in board.legal_moves:
+                if lm.to_square != target or not board.is_capture(lm):
+                    continue
+                p = board.piece_at(lm.from_square)
+                if want is None or (p and p.piece_type == want):
+                    rep.error(
+                        "claims",
+                        f"{beat['id']} says capturing on {move['to']} is "
+                        f"impossible, but "
+                        f"{board.san(lm)} is legal — the claim is false",
+                    )
+                    break
+            break
+
     words = [len(b["text"].split()) for b in beats]
     rep.info("narration", f"{sum(words)} words; per beat min={min(words)} "
                           f"max={max(words)} mean={sum(words)/len(words):.0f}")
@@ -665,6 +711,7 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                 wpm = words / (clip["durationMs"] / 60000) if words else 0.0
                 rows.append((beat["id"], at_ms[beat["id"]], f0, lv, wpm, words))
             loud_fast = []
+            outliers: List[Tuple[str, int]] = []
             for bid, at, f0, lv, wpm, words in rows:
                 near = [r for r in rows if abs(r[1] - at) <= 30000 and r[0] != bid]
                 if len(near) < 3:
@@ -685,6 +732,20 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                     what = ("louder" if hot else "faster" if fast else "sharper")
                     rep.warn("voice", f"{bid} at {ts(bid)} is noticeably {what} "
                                       "than its surroundings")
+                    outliers.append((bid, at))
+            # One odd beat is the synthesis breathing; a RUN of them is a
+            # stretch of narration in a different voice, and a listener called
+            # one "considerably off tune" while three consecutive warnings
+            # scrolled past as advice. Three flagged beats inside half a
+            # minute block the upload.
+            outliers.sort(key=lambda o: o[1])
+            for k in range(len(outliers) - 2):
+                if outliers[k + 2][1] - outliers[k][1] <= 30000:
+                    run = [o[0] for o in outliers[k:k + 3]]
+                    rep.error("voice", f"{len(run)} off-voice beats within 30s "
+                                       f"({', '.join(run)}) — a stretch a viewer "
+                                       "will hear as a different narrator")
+                    break
             if not bad_seams and not loud_fast and not mild:
                 rep.info("voice", "no seam or beat stands out in pitch, level or pace")
         finally:
@@ -867,6 +928,58 @@ def sample_frames(script: Dict[str, Any], rep: Report) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _check_title_names(title: str, meta: Dict[str, Any], rep: Report) -> None:
+    """A player must be named once, and by the name the channel settled on.
+
+    "Robert James Bobby Fischer Threw Two Pawns Away" was published: the model
+    wrote the PGN's formal name, and the expansion step added the familiar one
+    in front of the surname instead of replacing what was already there. The
+    audit had printed that title and passed it, because it only measured the
+    length. A title is the one piece of text every viewer reads, so it gets
+    checked like the board does.
+    """
+    for side in ("white", "black"):
+        full = (meta.get(f"{side}Full") or "").strip()
+        raw = (meta.get(side) or "").strip()
+        surname = (full.split() or [""])[-1]
+        if not surname or surname not in title:
+            continue
+        # Given names from the header that the title should NOT still carry —
+        # anything the resolved name dropped.
+        header_given = raw.partition(",")[2] if "," in raw else ""
+        kept = {w.lower() for w in full.split()[:-1]}
+        stale = [
+            w for w in re.split(r"[\s.]+", header_given)
+            if w and len(w) > 1 and w.lower() not in kept
+        ]
+        # Read the whole run of name-words in front of the surname, then ask
+        # whether any of them is one the channel dropped. Matching only on
+        # name-words keeps ordinary prose out of it: "James Watched as Bobby
+        # Fischer" has "Watched as" in the way, so the run starts at Bobby.
+        name_words = {w.lower() for w in stale} | kept
+        if not name_words:
+            continue
+        alts = "|".join(
+            re.escape(w) for w in sorted(name_words, key=len, reverse=True)
+        )
+        run = re.search(
+            rf"(?<![\w'])((?:(?:{alts})\s+)+){re.escape(surname)}(?![\w])",
+            title,
+            re.IGNORECASE,
+        )
+        if run:
+            found = {w.lower() for w in run.group(1).split()}
+            extra = sorted(found & {w.lower() for w in stale})
+            if extra:
+                rep.error(
+                    "metadata",
+                    f"title calls him '{run.group(0)}' but the channel calls "
+                    f"him '{full}' — {'/'.join(extra)} was left in front",
+                )
+        if len(re.findall(rf"(?<![\w']){re.escape(surname)}(?![\w])", title)) > 1:
+            rep.warn("metadata", f"title says '{surname}' more than once")
+
+
 def check_metadata(script: Dict[str, Any], rep: Report) -> None:
     meta = script.get("meta") or {}
     title = (meta.get("llmTitle") or "").strip()
@@ -879,6 +992,7 @@ def check_metadata(script: Dict[str, Any], rep: Report) -> None:
         rep.info("metadata", f"title ({len(title)} chars): {title}")
         if re.search(r"\|\s*[A-Za-z ]+ \d{4}\s*$", title):
             rep.warn("metadata", "title ends in a venue/year suffix, which costs clicks")
+        _check_title_names(title, meta, rep)
     if hook and len(hook) < 40:
         rep.warn("metadata", "description hook is very short")
 

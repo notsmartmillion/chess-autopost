@@ -139,3 +139,44 @@ def test_cannot_take_everything_is_commentary_not_a_claim():
         board, "Bxc6",
     )
     assert errors != []
+
+
+def test_king_has_to_move_is_not_read_as_a_rook_claim():
+    """The subject of "has to move" is the nearest piece, not any piece.
+
+    "uncovers the rook on e2 — check down the file, and Black's king has to
+    move" flagged a published video: the pattern matched the ROOK across the
+    sentence, found it safe where it stood, and called true narration a lie
+    (the engine said onlyKingMoves). Verified here through check_narration
+    with the real facts shape.
+    """
+    script = {
+        "beats": [{
+            "id": "b0073", "kind": "move", "ply": 71,
+            "fen": chess.Board().fen(),  # any legal position; ev decides
+            "move": {"from": "e3", "to": "d4", "san": "Kd4+"},
+            "text": ("King to d4 uncovers the rook on e2 — check down the "
+                     "file, and Black's king has to move."),
+        }],
+    }
+    facts = {"plies": [{
+        "ply": 71,
+        "features": {"checkEvasions": {
+            "kingMoves": ["Kf7", "Kd7", "Kd6", "Kf5"], "blocks": [],
+            "captures": [], "canBlock": False, "canCapture": False,
+            "onlyKingMoves": True, "isDouble": False, "isMate": False,
+        }},
+    }]}
+    rep = verify_render.Report()
+    verify_render.check_narration(script, facts, rep)
+    factual = [m for lvl, sec, m in rep.rows
+               if lvl == "ERROR" and sec == "claims"]
+    assert factual == [], factual
+
+
+def test_engine_contradictions_block_uploads():
+    """The engine-contradiction check must live in a blocking section."""
+    src = (Path(__file__).resolve().parents[3] / "services" / "orchestrator"
+           / "verify_render.py").read_text(encoding="utf-8")
+    assert 'rep.error("narration", f"claim contradicts' not in src
+    assert 'rep.error("claims", f"claim contradicts' in src

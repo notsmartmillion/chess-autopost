@@ -388,9 +388,14 @@ def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) 
             # king, and it is checkable on the board: the claim is true only
             # if no other move keeps that piece safe. Caught live: a narration
             # said exactly this while Rh6, Nf8 and Ne5 all defended the bishop.
+            # No other piece may stand between the square and the verb:
+            # "the rook on e2 — check, and Black's king has to move" is a
+            # claim about the KING, but the old pattern matched the rook,
+            # found it safe where it stood, and called true narration a lie.
             pm = re.search(
                 r"\b(queen|rook|bishop|knight|pawn)\b[^.!?]{0,40}?"
-                r"\bon\s+([a-hA-H][1-8])\b[^.!?]{0,60}?"
+                r"\bon\s+([a-hA-H][1-8])\b"
+                r"(?:(?!\b(?:king|queen|rook|bishop|knight|pawn)\b)[^.!?]){0,60}?"
                 r"\b(?:must|has to|is forced to)\s+move\b",
                 text)
             if pm:
@@ -401,7 +406,13 @@ def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) 
             elif not ev or not ev.get("onlyKingMoves"):
                 lies.append(beat["id"])
     if lies:
-        rep.error("narration", f"claim contradicts the engine in {sorted(set(lies))[:5]}")
+        # Filed under "claims", not "narration": this is a factual check, and
+        # only voice/claims/arrows sections block uploads. A video went out
+        # carrying what the audit believed was an engine-contradicted claim
+        # because this error sat in a section the gate treats as advisory —
+        # a falsehood is a falsehood whether the checker that caught it is
+        # old or new.
+        rep.error("claims", f"claim contradicts the engine in {sorted(set(lies))[:5]}")
 
     # "It can't recapture" is a legality claim, and legality is checkable.
     # Shipped live: "the d7 pawn is pinned against its own king, so it can't

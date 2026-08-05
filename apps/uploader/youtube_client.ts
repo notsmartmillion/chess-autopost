@@ -432,7 +432,16 @@ export async function fileInPlaylists(
         }
       }
     } catch (error: any) {
-      console.log(`(playlist "${name}" skipped: ${error?.message ?? error})`);
+      // Google API errors often carry their substance in errors[0].reason
+      // ("quotaExceeded") while message is empty — which is how a night of
+      // failures logged as `skipped: ` and said nothing.
+      const reason =
+        error?.errors?.[0]?.reason ??
+        error?.response?.data?.error?.errors?.[0]?.reason ??
+        error?.code ??
+        error?.message ??
+        String(error);
+      console.log(`(playlist "${name}" skipped: ${reason})`);
     }
   }
 }

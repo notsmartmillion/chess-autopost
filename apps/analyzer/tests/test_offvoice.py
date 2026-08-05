@@ -93,3 +93,20 @@ def test_the_audit_and_the_prerender_check_share_the_function():
     assert "1.30" not in audit_src and "> 3.5" not in audit_src, (
         "verify_render re-states the outlier thresholds instead of importing them"
     )
+
+
+def test_beats_below_the_floor_are_not_judged():
+    """An 8-word move announcement holds ~2.5s of voiced audio — too little
+    to estimate pitch or level. Three voice draws each "found" a cluster of
+    short beats in a different place; the floor is what stops a gate from
+    blocking on measurement noise. Both stages share it via tts.BEAT_MIN_MS.
+    """
+    from tts import BEAT_MIN_MS
+
+    assert BEAT_MIN_MS >= 4000
+    root = Path(__file__).resolve().parents[3] / "services" / "orchestrator"
+    audit_src = (root / "verify_render.py").read_text(encoding="utf-8")
+    assert "BEAT_MIN_MS" in audit_src, "the audit keeps its own floor"
+    assert "3000" not in audit_src.split("BEAT_MIN_MS")[1][:200], (
+        "a hardcoded floor survives next to the shared one"
+    )

@@ -709,7 +709,11 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                 if not clip:
                     continue
                 path = OUT / "audio" / clip["file"]
-                if not path.exists() or int(clip.get("durationMs") or 0) < 3000:
+                # Same floor as the pre-render check (tts.BEAT_MIN_MS): a
+                # clip this short cannot be measured against its neighbours,
+                # only mismeasured.
+                from tts import BEAT_MIN_MS  # noqa: PLC0415
+                if not path.exists() or int(clip.get("durationMs") or 0) < BEAT_MIN_MS:
                     continue
                 words = len(clip.get("words") or [])
                 lv = _level_db(path)

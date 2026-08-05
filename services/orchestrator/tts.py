@@ -814,6 +814,14 @@ BEAT_FAST_RATIO = 1.30
 BEAT_FAST_MIN_WORDS = 15
 BEAT_SHARP_RATIO = 0.12
 BEAT_CLUSTER_N = 3
+# Beats shorter than this are not judged at all. An eight-word clip holds
+# two-ish seconds of voiced audio, which is too little to estimate pitch or
+# level against a neighbourhood — three consecutive voice draws of
+# Korchnoi-Carlsen each "found" a cluster in a different place, every flagged
+# beat a short move announcement, while the clusters a listener actually
+# heard were twenty-second hold beats. Below the floor the measurement is
+# noise, and a gate fed noise blocks at random.
+BEAT_MIN_MS = 4_000
 
 
 def find_offvoice_beats(rows: Sequence[Tuple[str, int, float, Optional[float], float, int]]):
@@ -1989,7 +1997,7 @@ def _check_offvoice_beats(
             continue
         dur = int(clip.get("durationMs") or 0)
         path = out_dir / (clip.get("file") or "")
-        if dur >= 3000 and path.exists():
+        if dur >= BEAT_MIN_MS and path.exists():
             words = len(clip.get("words") or [])
             rows.append((
                 item["id"], at, _median_f0(path), _level_db(path),

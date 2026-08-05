@@ -27,7 +27,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / "outputs"
@@ -398,6 +398,99 @@ def apply_think_pauses(
     return applied
 
 
+# A finished sentence needs air before the next one starts. The synthesis
+# does not reliably leave any: measured across one render, 40 of 87
+# sentence-to-sentence transitions had under 0.20 s of silence and many had
+# 0.01 s — two thoughts butted together with no breath, which is what makes a
+# narrator sound assembled from pieces rather than talking. Natural speech
+# leaves 0.4-0.7 s at a full stop.
+SENTENCE_GAP_MS = 420
+# Leaving the game for a variation, or coming back to it, is a bigger change
+# of subject than the next sentence — the viewer needs a moment to notice the
+# board has changed.
+BRANCH_GAP_MS = 700
+
+
+def _ends_sentence(beat: Dict[str, Any]) -> bool:
+    return (beat.get("text") or "").rstrip().endswith((".", "!", "?", "…"))
+
+
+def _edge_silence(path: Path, cache: Dict[str, Any]) -> Tuple[int, int]:
+    """(leading, trailing) silence of a clip in ms, measured in the waveform.
+
+    Not from the word timings: alignment ends a word conservatively, so it
+    reports 251 ms of trailing silence on a clip that actually has 10 ms.
+    Trusting it left the very transitions that sounded clipped untouched.
+    """
+    key = str(path)
+    if key in cache:
+        return cache[key]
+    result = (0, 0)
+    try:
+        import wave as _wave
+
+        import numpy as np  # type: ignore
+
+        with _wave.open(str(path), "rb") as fh:
+            sr = fh.getframerate()
+            pcm = np.frombuffer(fh.readframes(fh.getnframes()),
+                                dtype=np.int16).astype(float)
+        if len(pcm):
+            win = max(1, int(sr * 0.01))
+            rms = np.array([np.sqrt((pcm[i:i + win] ** 2).mean())
+                            for i in range(0, len(pcm) - win, win)])
+            loud = np.where(rms > 120)[0]
+            if len(loud):
+                result = (int(loud[0] * 10), int((len(rms) - loud[-1]) * 10))
+    except Exception:  # noqa: BLE001
+        pass
+    cache[key] = result
+    return result
+
+
+def plan_sentence_pauses(script: Dict[str, Any], manifest: Dict[str, Any]) -> int:
+    """Record how much silence each finished sentence still needs.
+
+    Written onto the beat as ``tailMs`` for resolve_timing to honour. The gap
+    a listener hears is this clip's trailing silence plus the next clip's
+    leading silence, both measured from the audio itself.
+
+    A minimum, never an addition: a transition the synthesis already paced
+    well is left exactly as it is.
+    """
+    clips = manifest.get("clips") or {}
+    beats = script.get("beats", [])
+    padded = 0
+    frame_ms = 1000.0 / FPS
+    cache: Dict[str, Any] = {}
+    for i, beat in enumerate(beats[:-1]):
+        nxt = beats[i + 1]
+        if not _ends_sentence(beat):
+            continue  # sentence runs on; silence here would tear it apart
+        clip, nclip = clips.get(beat["id"]), clips.get(nxt["id"])
+        if not clip or not nclip:
+            continue
+        cur_path, next_path = AUDIO_DIR / clip["file"], AUDIO_DIR / nclip["file"]
+        if not cur_path.exists() or not next_path.exists():
+            continue
+        _, trail = _edge_silence(cur_path, cache)
+        lead, _ = _edge_silence(next_path, cache)
+        # Crossing into or out of a variation is a change of subject, not just
+        # of sentence.
+        crossing = bool(beat.get("branch")) != bool(nxt.get("branch")) \
+            or nxt.get("kind") in ("variation", "resume", "hold")
+        target = BRANCH_GAP_MS if crossing else SENTENCE_GAP_MS
+        need = target - max(0, trail) - max(0, lead)
+        if need <= 0:
+            continue
+        # Whole frames, so every later clip stays on the frame grid.
+        beat["tailMs"] = int(round(need / frame_ms) * frame_ms)
+        padded += 1
+    if padded:
+        print(f"[timing] {padded} sentence endings given room to breathe")
+    return padded
+
+
 def resolve_timing(script: Dict[str, Any], manifest: Dict[str, Any]) -> None:
     """Attach measured durations and move-animation cues to each beat."""
     from tts import word_time
@@ -405,15 +498,21 @@ def resolve_timing(script: Dict[str, Any], manifest: Dict[str, Any]) -> None:
     clips = manifest.get("clips", {}) or {}
     for beat in script.get("beats", []):
         clip = clips.get(beat["id"])
+        tail_ms = int(beat.get("tailMs") or 0)
         if clip and clip.get("chain"):
             # Mid-paragraph beat: its clip is a frame-exact slice of one
             # continuous take, and the next beat's clip is the very next
-            # sample. Padding or a minimum here would tear the sentence apart.
+            # sample. A blanket minimum here would tear a sentence apart —
+            # but where the sentence has actually ENDED, plan_sentence_pauses
+            # has measured how much breath is missing, and that much silence
+            # is exactly what was wrong with the narration.
             beat["audioFile"] = clip["file"]
-            beat["durationMs"] = int(clip["durationMs"])
+            beat["durationMs"] = int(clip["durationMs"]) + tail_ms
         elif clip:
             beat["audioFile"] = clip["file"]
-            beat["durationMs"] = max(MIN_BEAT_MS, int(clip["durationMs"]) + BEAT_TAIL_MS)
+            beat["durationMs"] = max(
+                MIN_BEAT_MS, int(clip["durationMs"]) + max(BEAT_TAIL_MS, tail_ms)
+            )
         else:
             beat["audioFile"] = None
             beat["durationMs"] = max(MIN_BEAT_MS, len(beat.get("text", "")) * 55)
@@ -759,6 +858,8 @@ def main() -> int:
         (OUT / "audio_manifest.json").write_text(
             json.dumps(manifest, indent=2), encoding="utf-8"
         )
+    # After the think pauses, so a challenge beat's own padding is counted.
+    plan_sentence_pauses(script, manifest)
     resolve_timing(script, manifest)
     save_script(script, OUT / "script.json")
 

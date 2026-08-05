@@ -34,8 +34,17 @@ const calculateMetadata: CalculateMetadataFunction<ChessNarrationProps> = async 
   return {durationInFrames, props: {...props, script}};
 };
 
+/**
+ * A script passed in props wins over the synced one.
+ *
+ * The thumbnail used to be renderable only for whatever build happened to own
+ * public/script.json, so regenerating one for an already-published video meant
+ * overwriting that file — which races any render in flight. Accepting the
+ * script directly makes "give this old video the current thumbnail" a safe,
+ * standalone operation.
+ */
 const thumbnailMetadata: CalculateMetadataFunction<ThumbnailProps> = async ({props}) => ({
-  props: {...props, script: await loadScript()},
+  props: {...props, script: (props.script as Script | null) ?? (await loadScript())},
 });
 
 registerRoot(() => {

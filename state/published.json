@@ -365,5 +365,33 @@
     "url": "https://www.youtube.com/watch?v=Xr7Y7Jp1sVQ",
     "title": "Vladimir Kramnik Sacrificed Twice \u2014 Levon Aronian Never Got the Piece Back",
     "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-05",
+    "pgn": "2026-08-05_Korchnoi_vs_Carlsen.pgn",
+    "archive": "Korchnoi-v-Carlsen-2004.mp4",
+    "sizeMb": 35.9,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Six Sacrifices on One File: Viktor Korchnoi vs Magnus Carlsen at 14",
+    "status": "uploaded",
+    "videoId": "xk_3Fr_H8Ys",
+    "url": "https://www.youtube.com/watch?v=xk_3Fr_H8Ys",
+    "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-05",
+    "pgn": "2026-08-05_Kramnik_vs_Aronian.pgn",
+    "archive": "Kramnik-v-Aronian-2012-3.mp4",
+    "sizeMb": 47.0,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Two Sacrifices, Two Pins: Vladimir Kramnik Dismantles Levon Aronian",
+    "status": "uploaded",
+    "videoId": "OyHFf8LJwS0",
+    "url": "https://www.youtube.com/watch?v=OyHFf8LJwS0",
+    "privacy": "unlisted"
   }
 ]

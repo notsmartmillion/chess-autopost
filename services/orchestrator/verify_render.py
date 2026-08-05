@@ -744,6 +744,46 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                                    "will hear as a different narrator")
             if not bad_seams and not loud_fast and not mild:
                 rep.info("voice", "no seam or beat stands out in pitch, level or pace")
+
+            # --- where to put an ear -------------------------------------
+            # A half-second the voice breaks upward reads, to every aggregate
+            # above, exactly like ordinary emphasis: a "huge slip up" at 1:52
+            # of a published video scored clean because a 13-second beat's
+            # median swallows a half-second squeal — and thresholding raw
+            # frames fails the other way, firing on every render's genuinely
+            # emphatic moments. Not machine-separable with these instruments,
+            # so the report does the next best thing: it names the hottest
+            # moments so a human can spot-check three timestamps instead of
+            # watching ten minutes.
+            try:
+                med_all = sorted(r[2] for r in rows if r[2])
+                med_f0_all = med_all[len(med_all) // 2] if med_all else 0.0
+                hot_moments = []
+                for beat in beats:
+                    clip = clips.get(beat["id"])
+                    if not clip:
+                        continue
+                    path = OUT / "audio" / clip["file"]
+                    if not path.exists():
+                        continue
+                    dur_s = int(clip.get("durationMs") or 0) / 1000
+                    t = 0.0
+                    while t + 0.5 <= dur_s:
+                        f0 = _median_f0(path, t, 0.5)
+                        lv = _level_db(path, t, 0.5)
+                        if (f0 and med_f0_all and f0 > med_f0_all * 1.3
+                                and lv is not None and lv > -16):
+                            hot_moments.append(
+                                (f0 / med_f0_all, at_ms[beat["id"]] + int(t * 1000), f0))
+                        t += 0.5
+                hot_moments.sort(reverse=True)
+                if hot_moments:
+                    where = ", ".join(
+                        f"{m // 60000}:{m % 60000 // 1000:02d} ({f0:.0f} Hz)"
+                        for _, m, f0 in hot_moments[:3])
+                    rep.info("voice", f"sharpest moments, worth a human ear: {where}")
+            except Exception:  # noqa: BLE001
+                pass
         finally:
             for p in take_files:
                 p.unlink(missing_ok=True)

@@ -32,25 +32,126 @@ BASE_URL = "https://raw.githubusercontent.com/rozim/ChessData/master/PgnMentor"
 # Legends whose collections make good narrated content. The value is the
 # display name used when the PGN headers are terse.
 LEGENDS: Dict[str, str] = {
-    "Tal": "Mikhail Tal",
-    "Fischer": "Bobby Fischer",
-    "Kasparov": "Garry Kasparov",
-    "Karpov": "Anatoly Karpov",
+    # --- romantic and classical, to 1945 ---
+    "Morphy": "Paul Morphy",
+    "Steinitz": "Wilhelm Steinitz",
+    "Zukertort": "Johannes Zukertort",
+    "Chigorin": "Mikhail Chigorin",
+    "Lasker": "Emanuel Lasker",
+    "Tarrasch": "Siegbert Tarrasch",
+    "Pillsbury": "Harry Nelson Pillsbury",
+    "Marshall": "Frank Marshall",
+    "Schlechter": "Carl Schlechter",
+    "Rubinstein": "Akiba Rubinstein",
     "Capablanca": "Jose Raul Capablanca",
     "Alekhine": "Alexander Alekhine",
-    "Morphy": "Paul Morphy",
+    "Nimzowitsch": "Aron Nimzowitsch",
+    "Reti": "Richard Reti",
+    "Euwe": "Max Euwe",
+    "Spielmann": "Rudolf Spielmann",
+    "Tartakower": "Savielly Tartakower",
+    # --- the Soviet school and its rivals, 1945-1990 ---
     "Botvinnik": "Mikhail Botvinnik",
+    "Smyslov": "Vasily Smyslov",
+    "Tal": "Mikhail Tal",
     "Petrosian": "Tigran Petrosian",
     "Spassky": "Boris Spassky",
-    "Smyslov": "Vasily Smyslov",
-    "Lasker": "Emanuel Lasker",
-    "Anand": "Viswanathan Anand",
-    "Kramnik": "Vladimir Kramnik",
-    "Carlsen": "Magnus Carlsen",
-    "Rubinstein": "Akiba Rubinstein",
+    "Fischer": "Bobby Fischer",
+    "Karpov": "Anatoly Karpov",
+    "Korchnoi": "Viktor Korchnoi",
     "Bronstein": "David Bronstein",
     "Keres": "Paul Keres",
+    "Geller": "Efim Geller",
+    "Larsen": "Bent Larsen",
+    "Najdorf": "Miguel Najdorf",
+    "Gligoric": "Svetozar Gligoric",
+    "Portisch": "Lajos Portisch",
+    "Reshevsky": "Samuel Reshevsky",
+    "Taimanov": "Mark Taimanov",
+    "Stein": "Leonid Stein",
+    # --- the professional era, 1990-2010 ---
+    "Kasparov": "Garry Kasparov",
+    "Anand": "Viswanathan Anand",
+    "Kramnik": "Vladimir Kramnik",
+    "Ivanchuk": "Vassily Ivanchuk",
+    "Shirov": "Alexei Shirov",
+    "Topalov": "Veselin Topalov",
+    "Gelfand": "Boris Gelfand",
+    "Short": "Nigel Short",
+    "Timman": "Jan Timman",
+    "Adams": "Michael Adams",
+    "Leko": "Peter Leko",
+    "Morozevich": "Alexander Morozevich",
+    "Ponomariov": "Ruslan Ponomariov",
+    "Svidler": "Peter Svidler",
+    "Seirawan": "Yasser Seirawan",
+    "Andersson": "Ulf Andersson",
+    # --- players the audience can watch this week ---
+    "Carlsen": "Magnus Carlsen",
+    "Nakamura": "Hikaru Nakamura",
+    "Caruana": "Fabiano Caruana",
+    "So": "Wesley So",
+    "Ding": "Ding Liren",
+    "Nepomniachtchi": "Ian Nepomniachtchi",
+    "Giri": "Anish Giri",
+    "Aronian": "Levon Aronian",
+    "Grischuk": "Alexander Grischuk",
+    "Karjakin": "Sergey Karjakin",
+    "Radjabov": "Teimour Radjabov",
+    "Mamedyarov": "Shakhriyar Mamedyarov",
+    "Firouzja": "Alireza Firouzja",
+    "Duda": "Jan-Krzysztof Duda",
+    "Rapport": "Richard Rapport",
+    "Wojtaszek": "Radoslaw Wojtaszek",
 }
+
+# Which era each legend belongs to, so the channel can deliberately alternate
+# rather than trust a shuffle.
+#
+# A pool that was eighteen names, all but three of them dead, produced a run
+# of videos where every thumbnail was a grainy portrait from the 1950s. A
+# viewer searching "Hikaru" or "Magnus" — the two most-searched names in
+# chess — found nothing here. Weighting the draw toward living players who
+# are still competing is how a back catalogue of classics gets discovered at
+# all: the recent names bring the traffic, the classics keep it.
+ERAS: Dict[str, tuple] = {
+    "classical": (
+        "Morphy", "Steinitz", "Zukertort", "Chigorin", "Lasker", "Tarrasch",
+        "Pillsbury", "Marshall", "Schlechter", "Rubinstein", "Capablanca",
+        "Alekhine", "Nimzowitsch", "Reti", "Euwe", "Spielmann", "Tartakower",
+    ),
+    "soviet": (
+        "Botvinnik", "Smyslov", "Tal", "Petrosian", "Spassky", "Fischer",
+        "Karpov", "Korchnoi", "Bronstein", "Keres", "Geller", "Larsen",
+        "Najdorf", "Gligoric", "Portisch", "Reshevsky", "Taimanov", "Stein",
+    ),
+    "professional": (
+        "Kasparov", "Anand", "Kramnik", "Ivanchuk", "Shirov", "Topalov",
+        "Gelfand", "Short", "Timman", "Adams", "Leko", "Morozevich",
+        "Ponomariov", "Svidler", "Seirawan", "Andersson",
+    ),
+    "current": (
+        "Carlsen", "Nakamura", "Caruana", "So", "Ding", "Nepomniachtchi",
+        "Giri", "Aronian", "Grischuk", "Karjakin", "Radjabov", "Mamedyarov",
+        "Firouzja", "Duda", "Rapport", "Wojtaszek",
+    ),
+}
+
+# Draw weights. Deliberately front-loaded onto players who are still playing:
+# they are what people search for, and a channel nobody finds cannot show
+# anybody a Capablanca endgame.
+ERA_WEIGHTS: Dict[str, float] = {
+    "current": 0.40,
+    "professional": 0.25,
+    "soviet": 0.25,
+    "classical": 0.10,
+}
+
+
+def pick_era(rng: Optional[random.Random] = None) -> str:
+    r = rng or random
+    names = list(ERA_WEIGHTS)
+    return r.choices(names, weights=[ERA_WEIGHTS[n] for n in names], k=1)[0]
 
 
 def _user_agent() -> str:

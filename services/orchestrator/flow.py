@@ -242,13 +242,30 @@ def _save_pick(pgn: str, headers: Dict, moves_hash: str, note: str) -> Path:
 
 
 def fetch_classic_game() -> Optional[Path]:
-    """Primary source: a famous game from a world-champion collection."""
-    from ingest.classics_fetch import LEGENDS, pick_game  # type: ignore
+    """Primary source: a famous game from a world-champion collection.
+
+    The era is drawn first, then a player inside it. Shuffling one flat pool
+    let chance decide how modern the channel looked, and chance produced a run
+    of videos where every face was from the 1950s — while the two most-searched
+    names in chess, Carlsen and Nakamura, sat in the pool unused.
+    """
+    from ingest.classics_fetch import ERAS, LEGENDS, pick_era, pick_game  # type: ignore
 
     used = set(_load_used().keys())
     players_env = os.getenv("DAILY_LEGENDS", "")
-    pool = [p.strip() for p in players_env.split(",") if p.strip()] or list(LEGENDS)
-    random.shuffle(pool)
+    if players_env:
+        pool = [p.strip() for p in players_env.split(",") if p.strip()]
+        random.shuffle(pool)
+    else:
+        # Try the drawn era first, then fall back through the others, so a
+        # collection that is exhausted or unreachable costs variety, not a day.
+        era = pick_era()
+        log(f"today's era: {era}")
+        pool = list(ERAS[era])
+        random.shuffle(pool)
+        rest = [p for name, players in ERAS.items() if name != era for p in players]
+        random.shuffle(rest)
+        pool += rest
 
     for player in pool[:4]:
         try:

@@ -479,9 +479,13 @@ def audit_render(pgn_path: Path) -> Tuple[int, List[str]]:
     blocking = [
         f"[{r.get('section')}] {r['message']}" for r in rows
         # voice: what a viewer hears as a new announcer. claims: a spoken
-        # chess statement the board proves false. Both are the channel's
-        # credibility; neither is a style call.
-        if r.get("level") == "ERROR" and r.get("section") in ("voice", "claims")
+        # chess statement the board proves false. arrows: the same falsehood
+        # drawn instead of spoken — an arrow pointing the wrong way was the
+        # first thing this channel's owner ever asked to have fixed, and a
+        # regression shipped while the audit reported it as advice. All three
+        # are the channel's credibility; none is a style call.
+        if r.get("level") == "ERROR"
+        and r.get("section") in ("voice", "claims", "arrows")
     ]
     total = sum(1 for r in rows if r.get("level") == "ERROR")
     return total, blocking

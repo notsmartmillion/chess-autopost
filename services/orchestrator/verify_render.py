@@ -276,7 +276,13 @@ def check_board_directives(script: Dict[str, Any], rep: Report) -> None:
                 # it points *at* the square the mover landed on, it says the
                 # opposite — the viewer reads a defensive warning where the
                 # narration is describing an attack.
-                if b == to:
+                #
+                # Except for a pin, which by definition ends on the king. When
+                # the king is what just moved, the pin ray legitimately lands
+                # on it: Darga-Keres drew b3->g8 after Kg8 while the narration
+                # said "the knight on d5 is now tied to that king by the
+                # bishop on b3" — the arrow was illustrating the sentence.
+                if b == to and not is_pin:
                     defensive.append(f"{beat['id']}:{a}->{b}")
         for h in beat.get("highlights") or []:
             if not re.fullmatch(r"[a-h][1-8]", h.get("square") or ""):

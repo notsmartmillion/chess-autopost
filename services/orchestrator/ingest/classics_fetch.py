@@ -88,6 +88,50 @@ def _year(date_header: Optional[str]) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+# Names a browsing chess viewer recognises without being told who they are.
+# The pool's own legends plus the opponents worth billing beside them: the
+# collections are full of games against club players and long-forgotten
+# masters, and "Lasker vs Didier" asks the audience to care about a name they
+# have never seen.
+#
+# This exists because of what the competition looks like. A channel running
+# this same format — near-daily narrated classics, consistent template — sat
+# at 244 uploads and single-digit views per video, while the genre's biggest
+# channel covers famous players in famous games almost exclusively. Cadence
+# and polish were never the difference; the matchup on the thumbnail is.
+FAMOUS: set = {k.lower() for k in LEGENDS} | {
+    "nimzowitsch", "reti", "euwe", "steinitz", "zukertort", "marshall",
+    "pillsbury", "chigorin", "tarrasch", "korchnoi", "larsen", "polgar",
+    "nakamura", "caruana", "ding", "nepomniachtchi", "aronian", "topalov",
+    "ivanchuk", "shirov", "short", "timman", "portisch", "gligoric",
+    "geller", "taimanov", "averbakh", "polugaevsky", "stein", "najdorf",
+    "reshevsky", "flohr", "boleslavsky", "szabo", "beliavsky", "andersson",
+    "seirawan", "adams", "svidler", "grischuk", "giri", "so", "firouzja",
+    "dubov", "rapport", "vidit", "gukesh", "praggnanandhaa", "erigaisi",
+    "morozevich", "leko", "ponomariov", "khalifman", "kasimdzhanov",
+    "bogoljubov", "spielmann", "tartakower", "rubinstein", "schlechter",
+    "janowski", "burn", "blackburne", "winawer", "gunsberg", "showalter",
+}
+
+# Events that carry their own weight in a title.
+BIG_EVENTS = (
+    "world championship", "world chess championship", "candidates",
+    "interzonal", "olympiad", "linares", "wijk aan zee", "tata steel",
+    "hoogovens", "corus", "dortmund", "tal memorial", "sinquefield",
+    "zurich", "avro", "nottingham", "hastings",
+)
+
+
+def _surname(raw: Optional[str]) -> str:
+    v = _clean(raw) or ""
+    first = v.split(",")[0] if "," in v else v.split(" ")[-1]
+    return re.sub(r"[^a-z]", "", first.lower())
+
+
+def is_famous(raw: Optional[str]) -> bool:
+    return _surname(raw) in FAMOUS
+
+
 def score_game(headers: chess.pgn.Headers, plies: int, hero: str) -> float:
     """Heuristic 'is this a good video' score, before any engine analysis."""
     score = 0.0
@@ -120,13 +164,26 @@ def score_game(headers: chess.pgn.Headers, plies: int, hero: str) -> float:
     elif result == "0-1" and hero_l in black:
         score += 20
 
-    # A named event beats an unknown one.
-    if _clean(headers.get("Event")):
+    # A named event beats an unknown one, and a famous one sells itself.
+    event = (_clean(headers.get("Event")) or "").lower()
+    if event:
         score += 8
+    if any(e in event for e in BIG_EVENTS):
+        score += 18
 
     # Both players identified.
     if _clean(headers.get("White")) and _clean(headers.get("Black")):
         score += 8
+
+    # The matchup. One legend is a given — it is their collection — so what
+    # decides whether the thumbnail reads as an event is the OTHER name.
+    # Weighted heavily on purpose: a famous pairing is the single strongest
+    # predictor available before any analysis, and the pool is large enough
+    # that insisting on one rarely comes up empty.
+    opponent = headers.get("Black") if _surname(headers.get("White")) == _surname(hero) \
+        else headers.get("White")
+    if is_famous(opponent):
+        score += 60
 
     year = _year(headers.get("Date"))
     if year:

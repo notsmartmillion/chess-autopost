@@ -716,42 +716,28 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                 f0 = _median_f0(path)
                 wpm = words / (clip["durationMs"] / 60000) if words else 0.0
                 rows.append((beat["id"], at_ms[beat["id"]], f0, lv, wpm, words))
-            loud_fast = []
-            outliers: List[Tuple[str, int]] = []
-            for bid, at, f0, lv, wpm, words in rows:
-                near = [r for r in rows if abs(r[1] - at) <= 30000 and r[0] != bid]
-                if len(near) < 3:
-                    continue
-                med_lv = sorted(r[3] for r in near)[len(near) // 2]
-                med_wpm = sorted(r[4] for r in near)[len(near) // 2]
-                med_f0 = sorted(r[2] for r in near)[len(near) // 2]
-                hot = lv is not None and med_lv is not None and lv - med_lv > 3.5
-                fast = words >= 15 and med_wpm and wpm / med_wpm > 1.30
-                sharp = f0 and med_f0 and abs(f0 / med_f0 - 1.0) > 0.12
-                if hot and fast:
-                    rep.error("voice", f"{bid} at {ts(bid)} is spoken "
-                                       f"{lv - med_lv:+.1f} dB and "
-                                       f"{(wpm / med_wpm - 1) * 100:+.0f}% wpm against "
-                                       "its surroundings — a different read")
-                    loud_fast.append(bid)
-                elif hot or fast or sharp:
-                    what = ("louder" if hot else "faster" if fast else "sharper")
-                    rep.warn("voice", f"{bid} at {ts(bid)} is noticeably {what} "
-                                      "than its surroundings")
-                    outliers.append((bid, at))
+            # One arithmetic, defined once in tts.py and shared with the
+            # pre-render check — two renders were built and then held in one
+            # day because the two stages judged beats differently.
+            from tts import find_offvoice_beats  # noqa: PLC0415
+
+            different_read, outlier_rows, cluster = find_offvoice_beats(rows)
+            loud_fast = [bid for bid, _, _ in different_read]
+            for bid, ddb, ratio in different_read:
+                rep.error("voice", f"{bid} at {ts(bid)} is spoken "
+                                   f"{ddb:+.1f} dB and {(ratio - 1) * 100:+.0f}% "
+                                   "wpm against its surroundings — a different read")
+            for bid, _at, what in outlier_rows:
+                rep.warn("voice", f"{bid} at {ts(bid)} is noticeably {what} "
+                                  "than its surroundings")
             # One odd beat is the synthesis breathing; a RUN of them is a
             # stretch of narration in a different voice, and a listener called
             # one "considerably off tune" while three consecutive warnings
-            # scrolled past as advice. Three flagged beats inside half a
-            # minute block the upload.
-            outliers.sort(key=lambda o: o[1])
-            for k in range(len(outliers) - 2):
-                if outliers[k + 2][1] - outliers[k][1] <= 30000:
-                    run = [o[0] for o in outliers[k:k + 3]]
-                    rep.error("voice", f"{len(run)} off-voice beats within 30s "
-                                       f"({', '.join(run)}) — a stretch a viewer "
-                                       "will hear as a different narrator")
-                    break
+            # scrolled past as advice.
+            if cluster:
+                rep.error("voice", f"{len(cluster)} off-voice beats within 30s "
+                                   f"({', '.join(cluster)}) — a stretch a viewer "
+                                   "will hear as a different narrator")
             if not bad_seams and not loud_fast and not mild:
                 rep.info("voice", "no seam or beat stands out in pitch, level or pace")
         finally:

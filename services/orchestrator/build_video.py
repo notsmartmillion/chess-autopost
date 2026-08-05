@@ -689,11 +689,20 @@ def main() -> int:
         except (OSError, ValueError):
             unresolved = []
         if unresolved:
-            print(f"\n[voice] ERROR: {len(unresolved)} seam(s) the rescue "
-                  "could not close:")
+            print(f"\n[voice] ERROR: {len(unresolved)} voice defect(s) the "
+                  "audit would fail:")
             for s in unresolved:
-                print(f"[voice]   into {s.get('take')}: {s.get('dHz'):+} Hz, "
-                      f"{s.get('dDb'):+} dB")
+                kind = s.get("type", "seam")
+                if kind == "off-voice-cluster":
+                    print(f"[voice]   {len(s.get('beats') or [])} off-voice "
+                          f"beats within 30s: {', '.join(s.get('beats') or [])}")
+                elif kind == "different-read":
+                    print(f"[voice]   {s.get('beat')} spoken "
+                          f"{s.get('dDb')} dB / x{s.get('wpmRatio')} wpm "
+                          "against its surroundings")
+                else:
+                    print(f"[voice]   seam into {s.get('take')}: "
+                          f"{s.get('dHz')} Hz, {s.get('dDb')} dB")
             print("[voice] stopping before the render — a fresh synthesis "
                   "draw usually passes (set TTS_ALLOW_SEAMS=1 to render "
                   "anyway).")

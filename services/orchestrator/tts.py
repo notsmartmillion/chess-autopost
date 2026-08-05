@@ -802,6 +802,61 @@ def _spoken_form(text: str) -> str:
     return pattern.sub(sub, text)
 
 
+# --- the shared definition of an off-voice beat ---------------------------
+# Used twice: by the pre-render check below, and by the post-render audit.
+# One set of numbers on purpose — the Kramnik-Aronian render passed every
+# seam check here, spent twenty-five minutes rendering, and was then held by
+# the audit's cluster rule, because the two stages were measuring different
+# things. Whatever would fail the audit must fail before the render.
+BEAT_NEIGHBOURHOOD_MS = 30_000
+BEAT_HOT_DB = 3.5
+BEAT_FAST_RATIO = 1.30
+BEAT_FAST_MIN_WORDS = 15
+BEAT_SHARP_RATIO = 0.12
+BEAT_CLUSTER_N = 3
+
+
+def find_offvoice_beats(rows: Sequence[Tuple[str, int, float, Optional[float], float, int]]):
+    """Judge each beat against its 30-second neighbourhood.
+
+    ``rows`` is (id, at_ms, f0, level_db, wpm, words) per substantial beat.
+    Returns (different_read, outliers, cluster):
+
+    * different_read — beats both hot AND fast against their surroundings,
+      each an audit error on its own;
+    * outliers — beats off in one dimension (warnings individually);
+    * cluster — the first run of BEAT_CLUSTER_N outliers inside one
+      neighbourhood, which the audit blocks on, or None.
+    """
+    different_read: List[Tuple[str, float, float]] = []
+    outliers: List[Tuple[str, int, str]] = []
+    for bid, at, f0, lv, wpm, words in rows:
+        near = [r for r in rows
+                if abs(r[1] - at) <= BEAT_NEIGHBOURHOOD_MS and r[0] != bid]
+        if len(near) < 3:
+            continue
+        med_lv = sorted(r[3] for r in near)[len(near) // 2]
+        med_wpm = sorted(r[4] for r in near)[len(near) // 2]
+        med_f0 = sorted(r[2] for r in near)[len(near) // 2]
+        hot = lv is not None and med_lv is not None and lv - med_lv > BEAT_HOT_DB
+        fast = (words >= BEAT_FAST_MIN_WORDS and med_wpm
+                and wpm / med_wpm > BEAT_FAST_RATIO)
+        sharp = f0 and med_f0 and abs(f0 / med_f0 - 1.0) > BEAT_SHARP_RATIO
+        if hot and fast:
+            different_read.append((bid, lv - med_lv, wpm / med_wpm))
+        elif hot or fast or sharp:
+            what = "louder" if hot else ("faster" if fast else "sharper")
+            outliers.append((bid, at, what))
+    outliers.sort(key=lambda o: o[1])
+    cluster: Optional[List[str]] = None
+    for k in range(len(outliers) - (BEAT_CLUSTER_N - 1)):
+        if (outliers[k + BEAT_CLUSTER_N - 1][1] - outliers[k][1]
+                <= BEAT_NEIGHBOURHOOD_MS):
+            cluster = [o[0] for o in outliers[k:k + BEAT_CLUSTER_N]]
+            break
+    return different_read, outliers, cluster
+
+
 def _fetch_primed(fetch, text: str, primer: str, dest: Path, label: str) -> None:
     """Synthesize ``text`` as a continuation of ``primer``, primer cut away.
 
@@ -1908,7 +1963,65 @@ def _ttsapi_synthesize(
     if trimmed_ms:
         print(f"[tts] trimmed {trimmed_ms / 1000:.1f}s of lead-in silence "
               f"across {total} takes")
+    _check_offvoice_beats(lines, clips, out_dir)
     return clips
+
+
+def _check_offvoice_beats(
+    lines: Sequence[Dict[str, str]],
+    clips: Dict[str, Dict[str, Any]],
+    out_dir: Path,
+) -> None:
+    """The pre-render half of the audit's per-beat verdict.
+
+    The seam checks judge take boundaries; these judge each beat against its
+    own thirty seconds, with the audit's exact arithmetic via
+    find_offvoice_beats — the same clip files the audit will measure, before
+    the render spends twenty-five minutes on them. Two renders were built and
+    then held by the audit's cluster rule in one day because this half was
+    missing. Verdicts are appended to the marker the build step already reads.
+    """
+    rows = []
+    at = 0
+    for item in lines:
+        clip = clips.get(item["id"])
+        if not clip:
+            continue
+        dur = int(clip.get("durationMs") or 0)
+        path = out_dir / (clip.get("file") or "")
+        if dur >= 3000 and path.exists():
+            words = len(clip.get("words") or [])
+            rows.append((
+                item["id"], at, _median_f0(path), _level_db(path),
+                words / (dur / 60000) if words else 0.0, words,
+            ))
+        at += dur
+
+    try:
+        different_read, _outliers, cluster = find_offvoice_beats(rows)
+    except Exception as exc:  # noqa: BLE001
+        # Measurement, not synthesis: never let the check cost the run.
+        print(f"[tts] off-voice check skipped ({exc})")
+        return
+
+    defects: List[Dict[str, Any]] = []
+    for bid, ddb, ratio in different_read:
+        defects.append({"type": "different-read", "beat": bid,
+                        "dDb": round(ddb, 1), "wpmRatio": round(ratio, 2)})
+        print(f"[tts] beat {bid} is {ddb:+.1f} dB and x{ratio:.2f} wpm "
+              "against its surroundings — the audit will fail it")
+    if cluster:
+        defects.append({"type": "off-voice-cluster", "beats": cluster})
+        print(f"[tts] {len(cluster)} off-voice beats within 30s "
+              f"({', '.join(cluster)}) — the audit will fail it")
+    if not defects:
+        return
+    marker = out_dir / "unresolved_seams.json"
+    try:
+        existing = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = []
+    marker.write_text(json.dumps(existing + defects), encoding="utf-8")
 
 
 def _silent_synthesize(lines: Sequence[Dict[str, str]], out_dir: Path) -> Dict[str, Dict[str, Any]]:

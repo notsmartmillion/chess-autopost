@@ -324,5 +324,46 @@
     "url": "https://www.youtube.com/watch?v=fGhYFSy56Uo",
     "title": "Bobby Fischer Sacrificed Two Pawns \u2014 Then a Pawn Ate the Queen",
     "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-05",
+    "pgn": "2026-08-05_Darga_vs_Keres.pgn",
+    "archive": "Darga-v-Keres-1964.mp4",
+    "sizeMb": 38.2,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Four Sacrifices in One Game \u2014 Paul Keres Never Blinked",
+    "status": "uploaded",
+    "videoId": "2XcSGXPLhP8",
+    "url": "https://www.youtube.com/watch?v=2XcSGXPLhP8",
+    "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-05",
+    "pgn": "2026-08-05_Kramnik_vs_Aronian.pgn",
+    "archive": "Kramnik-v-Aronian-2012.mp4",
+    "sizeMb": 43.9,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Vladimir Kramnik Sacrificed Twice \u2014 Levon Aronian Never Got the Piece Back",
+    "status": "held_audit",
+    "auditErrors": [
+      "[voice] 3 off-voice beats within 30s (b0044, b0045, b0046) \u2014 a stretch a viewer will hear as a different narrator"
+    ]
+  },
+  {
+    "archive": "Kramnik-v-Aronian-2012-2.mp4",
+    "date": "2026-08-05",
+    "pgn": "2026-08-05_Kramnik_vs_Aronian.pgn",
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "status": "uploaded",
+    "videoId": "Xr7Y7Jp1sVQ",
+    "url": "https://www.youtube.com/watch?v=Xr7Y7Jp1sVQ",
+    "title": "Vladimir Kramnik Sacrificed Twice \u2014 Levon Aronian Never Got the Piece Back",
+    "privacy": "unlisted"
   }
 ]

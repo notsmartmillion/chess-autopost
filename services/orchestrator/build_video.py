@@ -284,6 +284,42 @@ def _named_video_copy(script: Dict[str, Any]) -> Optional[Path]:
         return None
 
 
+def _silent_split(
+    data: bytes, sr: int, width: int, after_t: float, before_t: float
+) -> float:
+    """The quietest instant between two words, where a splice is inaudible.
+
+    Searched in the real waveform rather than trusted from the alignment,
+    because a cut a few tens of milliseconds off clips the next word's onset
+    and the listener hears a sound begin and vanish. Falls back to the word
+    boundary itself when the window is unusable.
+    """
+    lo = max(0.0, after_t)
+    hi = max(lo, before_t)
+    if hi - lo < 0.02:
+        return lo
+    try:
+        import array as _array
+
+        pcm = _array.array("h")
+        pcm.frombytes(data[: len(data) - (len(data) % 2)])
+        step = max(1, int(sr * 0.005))          # 5 ms resolution
+        win = max(step, int(sr * 0.02))         # 20 ms of energy
+        best_t, best_e = lo, None
+        i = int(lo * sr)
+        end = min(len(pcm) - win, int(hi * sr))
+        while i <= end:
+            seg = pcm[i:i + win]
+            energy = sum(abs(s) for s in seg)
+            if best_e is None or energy < best_e:
+                best_e, best_t = energy, (i + win / 2) / sr
+            i += step
+        # Keep the splice inside the gap even if the window was ragged.
+        return min(max(best_t, lo), hi)
+    except Exception:  # noqa: BLE001
+        return lo
+
+
 def apply_think_pauses(
     script: Dict[str, Any], manifest: Dict[str, Any], pause_ms: int = 5000, limit: int = 3
 ) -> int:
@@ -325,13 +361,24 @@ def apply_think_pauses(
         idx = sum(1 for t in tokens[: end_tok + 1] if _norm_word(t)) - 1
         if not (0 <= idx < len(words)):
             continue
-        insert_t = float(words[idx]["e"]) + 0.15
 
         with wave.open(str(path), "rb") as fh:
             params = fh.getparams()
             sr = fh.getframerate()
             data = fh.readframes(fh.getnframes())
         width = params.sampwidth * params.nchannels
+
+        # Cut where the audio is actually silent, not a fixed distance after
+        # the aligned word end. A blind +0.15s landed 40 ms into the onset of
+        # the following word: the render said "try to find it. Th—", then five
+        # seconds of nothing, then "—ere is one move". Alignment ends a word a
+        # little early or late; the waveform does not lie about where the gap
+        # is, so ask it.
+        word_end = float(words[idx]["e"])
+        next_start = (float(words[idx + 1]["s"]) if idx + 1 < len(words)
+                      else word_end + 0.5)
+        insert_t = _silent_split(data, sr, width, word_end, next_start)
+
         pad_frames = round(pause_ms * FPS / 1000)
         pad = b"\x00" * (int(sr / FPS) * pad_frames * width)
         cut = min(len(data), int(round(insert_t * sr)) * width)

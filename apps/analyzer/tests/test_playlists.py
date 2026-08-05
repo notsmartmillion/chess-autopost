@@ -89,3 +89,25 @@ def test_current_players_are_the_heaviest_draw():
         assert era in ERA_WEIGHTS, f"{era} can never be drawn"
     for name in ("Carlsen", "Nakamura", "Caruana", "Firouzja"):
         assert name in ERAS["current"]
+
+
+def test_online_handles_never_become_playlists():
+    """Chess.com games arrive with handles, not names.
+
+    "Anna Cramling vs Trojan-Knight" must file under her and no one else — a
+    "Trojan-Knight" playlist would be indistinguishable from a bug.
+    """
+    assert playlists_for({"white": "Trojan-Knight", "black": "Anna Cramling"}) == [
+        "Anna Cramling",
+    ]
+    assert playlists_for({"white": "SomeHandle99", "black": "xXChessLordXx"}) == []
+
+
+def test_players_sharing_a_surname_are_told_apart():
+    """Anna and Pia Cramling cannot both be keyed on "cramling"."""
+    assert playlists_for({"white": "Pia Cramling", "black": "Levy Rozman"}) == [
+        "Pia Cramling", "Levy Rozman",
+    ]
+    assert playlists_for({"white": "Anna Cramling", "black": "Hikaru Nakamura"}) == [
+        "Anna Cramling", "Hikaru Nakamura",
+    ]

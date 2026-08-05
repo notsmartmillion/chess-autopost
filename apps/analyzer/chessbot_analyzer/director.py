@@ -240,6 +240,16 @@ COMMON_NAMES: Dict[str, str] = {
 }
 
 
+# Players whose surname cannot identify them. Anna and Pia Cramling share
+# one, so a surname-keyed table would have to pick a favourite; these arrive
+# from the Chess.com source with their full names already in the header.
+BY_FULL_NAME: set = {
+    "Anna Cramling",
+    "Pia Cramling",
+    "Levy Rozman",
+}
+
+
 def playlists_for(meta: Dict[str, Any]) -> List[str]:
     """Which channel playlists this game belongs in.
 
@@ -247,11 +257,14 @@ def playlists_for(meta: Dict[str, Any]) -> List[str]:
     channel cannot end up with both a "Bobby Fischer" and a "Fischer" list —
     the same table that resolves the name for the title resolves it here.
     Only recognisable players get one: a "Didier" playlist of one video helps
-    nobody find anything.
+    nobody find anything, and neither does a "Trojan-Knight" one.
     """
     out: List[str] = []
     for side in ("white", "black"):
-        known = COMMON_NAMES.get(_surname_key(meta.get(side)))
+        raw = _clean(meta.get(side)) or ""
+        known = COMMON_NAMES.get(_surname_key(raw))
+        if not known and raw in BY_FULL_NAME:
+            known = raw
         if known and known not in out:
             out.append(known)
     return out

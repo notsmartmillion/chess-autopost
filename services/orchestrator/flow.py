@@ -20,6 +20,7 @@ import io
 import json
 import os
 import random
+import re
 import subprocess
 import shutil
 import sys
@@ -287,6 +288,108 @@ def fetch_classic_game() -> Optional[Path]:
     return None
 
 
+# Players the audience follows rather than reads about. Their games are not
+# in the tournament archive — Anna Cramling is a streamer with a Chess.com
+# account, not a name in a PgnMentor collection — so they come from a
+# different door entirely. Keyed by Chess.com username.
+STREAMERS: Dict[str, str] = {
+    "annacramling": "Anna Cramling",
+    "piacramling": "Pia Cramling",
+    "hikaru": "Hikaru Nakamura",
+    "magnuscarlsen": "Magnus Carlsen",
+    "gothamchess": "Levy Rozman",
+}
+
+# Online play is mostly bullet, which narrates as a blur. These are the
+# Chess.com time-class names worth a ten-minute video.
+NARRATABLE_CLASSES = ("rapid", "daily", "classical")
+
+# How often the daily draw goes to a streamer instead of the archive. One in
+# five: enough that the channel visibly covers living players, rare enough
+# that the catalogue stays built on games worth a ten-minute analysis.
+STREAMER_SHARE = float(os.getenv("DAILY_STREAMER_SHARE", "0.2"))
+
+
+def _name_the_players(pgn: str) -> str:
+    """Put real names in the headers where we know them.
+
+    Chess.com PGNs carry handles: "annacramling", "gothamchess". Every
+    downstream surface reads those headers, so without this the title, the
+    thumbnail, the spoken narration and the playlist would all call her
+    Annacramling. An opponent we do not recognise keeps their handle — it is
+    what they are called, and inventing a name would be worse.
+    """
+    def sub(m: "re.Match[str]") -> str:
+        tag, handle = m.group(1), m.group(2)
+        known = STREAMERS.get(handle.lower())
+        return f'[{tag} "{known or handle}"]'
+
+    return re.sub(r'\[(White|Black) "([^"]*)"\]', sub, pgn)
+
+
+def fetch_streamer_game(months_back: int = 6) -> Optional[Path]:
+    """A recent game from someone the audience watches live.
+
+    The archive stops at elite tournament play, so the people a chess viewer
+    actually follows on YouTube and Twitch are absent from it. This reaches
+    Chess.com for them, and prefers their slower games: a three-minute blitz
+    scramble has no story a calm narrator can tell.
+    """
+    from ingest.chesscom_fetch import fetch_latest  # type: ignore
+
+    users_env = os.getenv("DAILY_STREAMERS", "")
+    users = [u.strip() for u in users_env.split(",") if u.strip()] or list(STREAMERS)
+    random.shuffle(users)
+
+    used = _load_used()
+    for user in users[:2]:
+        try:
+            log(f"fetching recent Chess.com games for '{user}'…")
+            games = fetch_latest(user, months_back=months_back)
+        except Exception as exc:  # noqa: BLE001
+            log(f"  {user}: {exc}")
+            continue
+
+        candidates: List[Dict] = []
+        for g in games:
+            pgn = g.get("pgn") or ""
+            meta = g.get("meta") or {}
+            # Time class lives in the PGN headers Chess.com emits.
+            m = re.search(r'\[TimeControl "([^"]+)"\]', pgn)
+            base = 0
+            if m:
+                head = m.group(1).split("+")[0]
+                base = int(head) if head.isdigit() else 0
+            # 10 minutes a side or slower, or correspondence.
+            if base and base < 600 and "1/" not in (m.group(1) if m else ""):
+                continue
+            h = _moves_hash(pgn)
+            if h in used:
+                continue
+            g["hash"] = h
+            g["score"] = _score_game(meta, pgn)
+            candidates.append(g)
+
+        if not candidates:
+            log(f"  {user}: no unused slow games in the last {months_back} months")
+            continue
+
+        best = max(candidates, key=lambda g: g["score"])
+        pgn = _name_the_players(best["pgn"])
+        meta = dict(best.get("meta") or {})
+        for side in ("white", "black"):
+            meta[side] = STREAMERS.get((meta.get(side) or "").lower(), meta.get(side))
+        headers = {"White": meta.get("white"), "Black": meta.get("black")}
+        dest = _save_pick(pgn, headers, best["hash"], f"chesscom:{user}")
+        log(
+            f"selected: {meta.get('white')} vs {meta.get('black')} "
+            f"({meta.get('result')}, {meta.get('ply_count')} plies, "
+            f"{STREAMERS.get(user, user)}) -> {dest.name}"
+        )
+        return dest
+    return None
+
+
 def fetch_lichess_game(limit_per_player: int = 15) -> Optional[Path]:
     """Secondary source: a recent online game from a strong player."""
     from ingest.lichess_fetch import fetch_lichess_games  # type: ignore
@@ -334,12 +437,22 @@ def fetch_lichess_game(limit_per_player: int = 15) -> Optional[Path]:
 
 
 def fetch_daily_game() -> Optional[Path]:
-    """Pick today's game: classic masterpiece first, online game as a backup."""
+    """Pick today's game.
+
+    Mostly the archive, but one day in five from someone the audience can
+    watch live. A channel that only ever posts dead players is a history
+    channel; the living names are what a browsing viewer searches for, and
+    what gives the Capablanca endgames an audience to be shown to.
+    """
     source = os.getenv("DAILY_SOURCE", "classics").lower()
 
     order = [fetch_classic_game, fetch_lichess_game]
     if source == "lichess":
         order.reverse()
+    elif source == "streamers":
+        order = [fetch_streamer_game, fetch_classic_game, fetch_lichess_game]
+    elif source == "classics" and random.random() < STREAMER_SHARE:
+        order = [fetch_streamer_game] + order
 
     for fn in order:
         try:

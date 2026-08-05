@@ -279,16 +279,41 @@ export async function getVideoInfo(videoId: string): Promise<any> {
  */
 export async function listVideos(maxResults: number = 50): Promise<any[]> {
   const youtube = getYouTubeClient();
-  
+
+  // Over-fetch, then keep only what a viewer can actually watch. These feed
+  // the "More videos" block in every description, and `forMine` returns
+  // unlisted uploads too — so a published video's own description pointed at
+  // the superseded drafts it had replaced. A viewer clicking through from our
+  // best Fischer render landed on the Lasker cut with "M1. Didier" still on
+  // the intro card. A dead-end link is worse than no link at all.
   const response = await youtube.search.list({
     part: ['snippet'],
     forMine: true,
     type: ['video'],
-    maxResults: maxResults,
+    maxResults: Math.min(50, Math.max(maxResults * 5, 20)),
     order: 'date',
   });
-  
-  return response.data.items || [];
+
+  const items = response.data.items || [];
+  const ids = items
+    .map((i: any) => i?.id?.videoId)
+    .filter(Boolean) as string[];
+  if (!ids.length) return [];
+
+  // search.list carries no privacy status, so ask for it explicitly.
+  const details = await youtube.videos.list({
+    part: ['status'],
+    id: ids,
+  });
+  const isPublic = new Set(
+    (details.data.items || [])
+      .filter((v: any) => v?.status?.privacyStatus === 'public')
+      .map((v: any) => v.id as string)
+  );
+
+  return items
+    .filter((i: any) => isPublic.has(i?.id?.videoId))
+    .slice(0, maxResults);
 }
 
 /**

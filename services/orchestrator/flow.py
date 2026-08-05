@@ -612,10 +612,13 @@ def audit_render(pgn_path: Path) -> Tuple[int, List[str]]:
         # chess statement the board proves false. arrows: the same falsehood
         # drawn instead of spoken — an arrow pointing the wrong way was the
         # first thing this channel's owner ever asked to have fixed, and a
-        # regression shipped while the audit reported it as advice. All three
-        # are the channel's credibility; none is a style call.
+        # regression shipped while the audit reported it as advice. script:
+        # whether the words were written at all — an expired API key published
+        # fifty minutes of template prose under a template title while the
+        # audit said exactly that and nothing was listening. None of these is
+        # a style call; all of them are whether the video is what it claims.
         if r.get("level") == "ERROR"
-        and r.get("section") in ("voice", "claims", "arrows")
+        and r.get("section") in ("voice", "claims", "arrows", "script")
     ]
     total = sum(1 for r in rows if r.get("level") == "ERROR")
     return total, blocking

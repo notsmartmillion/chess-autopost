@@ -667,6 +667,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--allow-fallback-voice", action="store_true",
                     help="Render even if the voice service was unreachable and "
                          "the audio came from the SAPI fallback")
+    ap.add_argument("--allow-template-narration", action="store_true",
+                    help="Render even if the narration model failed and the "
+                         "words came from the built-in templates")
     return ap.parse_args()
 
 
@@ -704,12 +707,33 @@ def main() -> int:
     )
 
     # --- 2) director ----------------------------------------------------
+    wanted_llm = not args.no_llm and not args.reuse_narration
     script = build_script(
         facts,
         channel_name=os.getenv("CHANNEL_NAME", "Nocturne Chess"),
-        use_llm=not args.no_llm and not args.reuse_narration,
+        use_llm=wanted_llm,
         seed=args.seed,
     )
+
+    # The narration layer degrades to templates when the API call fails, which
+    # is right for a library function and wrong for this channel: the written
+    # commentary IS the product. An expired Anthropic key once produced a full
+    # fifty-minute render of template prose, titled "Korchnoi vs Carlsen -
+    # Smartfish Masters - 2004", which then uploaded itself — the audit said
+    # so plainly and nothing was listening. The voice layer has refused this
+    # since July; the words deserve the same refusal, and before the render
+    # rather than after.
+    if (
+        wanted_llm
+        and not args.allow_template_narration
+        and (script.get("meta") or {}).get("narration") != "llm"
+    ):
+        print("\n[script] ERROR: asked for written narration but the model did "
+              "not answer — this build is template prose.")
+        print("[script] check ANTHROPIC_API_KEY / OPENAI_API_KEY (the log above "
+              "carries the API's own message), then run this again,")
+        print("[script] or pass --allow-template-narration to render anyway.")
+        return 5
 
     # The narration model writes fresh text every run, so two builds of the
     # same game are never the same video — which makes A/B-ing a voice or

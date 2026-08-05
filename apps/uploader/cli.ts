@@ -13,7 +13,7 @@ import dotenv from 'dotenv';
 dotenv.config({ path: path.resolve(process.cwd(), '..', '..', '.env') });
 import { Command } from 'commander';
 import fs from 'fs/promises';
-import { uploadVideo, getVideoInfo, updateVideoMetadata, listVideos, verifyChannel } from './youtube_client';
+import { uploadVideo, getVideoInfo, updateVideoMetadata, listVideos, verifyChannel, fileInPlaylists } from './youtube_client';
 import type { UploadOptions } from './youtube_client';
 import { generateMetadata } from './metadata';
 import { generateChaptersText } from './chapters';
@@ -103,6 +103,13 @@ https://youtu.be/${v.id.videoId}`);
       console.log('Video ID:', result.videoId);
       console.log('URL:', result.url);
       console.log('Status:', result.status);
+
+      // File it under each player's playlist. After the upload on purpose: a
+      // published video with no playlist is a small loss, a lost video is not.
+      const playlists = (script.meta as any)?.playlists as string[] | undefined;
+      if (result.videoId && playlists?.length) {
+        await fileInPlaylists(result.videoId, playlists);
+      }
 
       // The option existed but was never implemented, so flow.py's ledger —
       // the permanent record of what this channel has published — recorded

@@ -185,7 +185,48 @@ COMMON_NAMES: Dict[str, str] = {
     "anand": "Viswanathan Anand",
     "kramnik": "Vladimir Kramnik",
     "gukesh": "Gukesh Dommaraju",
+    # Names added for the playlist grouping below, which files a video under
+    # any player listed here. Only names whose spelling is not in doubt: this
+    # table decides what is printed on the title, the thumbnail and now a
+    # playlist, so a guess here is a factual error on three surfaces at once.
+    "aronian": "Levon Aronian",
+    "gelfand": "Boris Gelfand",
+    "topalov": "Veselin Topalov",
+    "ivanchuk": "Vassily Ivanchuk",
+    "caruana": "Fabiano Caruana",
+    "nakamura": "Hikaru Nakamura",
+    "polgar": "Judit Polgar",
+    "larsen": "Bent Larsen",
+    "geller": "Efim Geller",
+    "najdorf": "Miguel Najdorf",
+    "gligoric": "Svetozar Gligoric",
+    "timman": "Jan Timman",
+    "short": "Nigel Short",
+    "shirov": "Alexei Shirov",
+    "tarrasch": "Siegbert Tarrasch",
+    "chigorin": "Mikhail Chigorin",
+    "zukertort": "Johannes Zukertort",
+    "tartakower": "Savielly Tartakower",
+    "uhlmann": "Wolfgang Uhlmann",
+    "westerinen": "Heikki Westerinen",
 }
+
+
+def playlists_for(meta: Dict[str, Any]) -> List[str]:
+    """Which channel playlists this game belongs in.
+
+    Player-name playlists, decided here rather than in the uploader so the
+    channel cannot end up with both a "Bobby Fischer" and a "Fischer" list —
+    the same table that resolves the name for the title resolves it here.
+    Only recognisable players get one: a "Didier" playlist of one video helps
+    nobody find anything.
+    """
+    out: List[str] = []
+    for side in ("white", "black"):
+        known = COMMON_NAMES.get(_surname_key(meta.get(side)))
+        if known and known not in out:
+            out.append(known)
+    return out
 
 
 def _surname_key(full: Optional[str]) -> str:
@@ -384,6 +425,7 @@ class Director:
                 # listing cannot disagree about what a player is called.
                 "whiteFull": full_name(meta.get("white")),
                 "blackFull": full_name(meta.get("black")),
+                "playlists": playlists_for(meta),
                 "quote": quote,
             },
             "beats": beats,

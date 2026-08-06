@@ -1993,35 +1993,61 @@ def narrate_with_llm(
     content: Optional[str] = None
 
     if anthropic_key:
-        try:
-            import anthropic
+        # Transient faults get another go. "Overloaded" is the API saying
+        # "not right now", not "no" — and treating it as fatal cost a full
+        # pipeline run: the narration silently became templates and the build
+        # stopped. An unattended daily channel will meet this regularly, so
+        # the request waits and asks again rather than giving up the one thing
+        # that makes the video worth watching.
+        import time as _time
 
-            client = anthropic.Anthropic(api_key=anthropic_key)
-            # Stream: a full script can run well past the non-streaming
-            # timeout guard, and thinking tokens count toward max_tokens.
-            with client.messages.stream(
-                model=model or os.getenv("NARRATION_MODEL", "claude-opus-5"),
-                max_tokens=32000,
-                system=SYSTEM_PROMPT,
-                thinking={"type": "adaptive"},
-                output_config={
-                    "effort": os.getenv("NARRATION_EFFORT", "medium"),
-                    "format": {"type": "json_schema", "schema": NARRATION_SCHEMA},
-                },
-                messages=[{"role": "user", "content": payload}],
-            ) as stream:
-                message = stream.get_final_message()
+        attempts = int(os.getenv("NARRATION_ATTEMPTS", "4"))
+        for attempt in range(1, attempts + 1):
+            try:
+                import anthropic
 
-            if message.stop_reason == "refusal":
-                logger.warning("Narration request was refused; keeping templates.")
-                return False
-            content = "".join(b.text for b in message.content if b.type == "text")
-            usage = message.usage
-            logger.info(
-                f"Narration tokens: in={usage.input_tokens} out={usage.output_tokens}"
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"Anthropic narration failed: {exc}")
+                client = anthropic.Anthropic(api_key=anthropic_key)
+                # Stream: a full script can run well past the non-streaming
+                # timeout guard, and thinking tokens count toward max_tokens.
+                with client.messages.stream(
+                    model=model or os.getenv("NARRATION_MODEL", "claude-opus-5"),
+                    max_tokens=32000,
+                    system=SYSTEM_PROMPT,
+                    thinking={"type": "adaptive"},
+                    output_config={
+                        "effort": os.getenv("NARRATION_EFFORT", "medium"),
+                        "format": {"type": "json_schema", "schema": NARRATION_SCHEMA},
+                    },
+                    messages=[{"role": "user", "content": payload}],
+                ) as stream:
+                    message = stream.get_final_message()
+
+                if message.stop_reason == "refusal":
+                    logger.warning("Narration request was refused; keeping templates.")
+                    return False
+                content = "".join(b.text for b in message.content if b.type == "text")
+                usage = message.usage
+                logger.info(
+                    f"Narration tokens: in={usage.input_tokens} out={usage.output_tokens}"
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                text = str(exc).lower()
+                # A bad key or a malformed request fails the same way every
+                # time; only capacity and transport faults are worth a retry.
+                transient = any(k in text for k in (
+                    "overloaded", "rate_limit", "429", "500", "502", "503",
+                    "504", "timeout", "timed out", "connection", "temporarily",
+                ))
+                if not transient or attempt == attempts:
+                    logger.warning(f"Anthropic narration failed: {exc}")
+                    break
+                delay = min(60, 5 * 2 ** (attempt - 1))
+                logger.warning(
+                    f"Anthropic narration attempt {attempt}/{attempts} failed "
+                    f"({text[:60]}); retrying in {delay}s"
+                )
+                _time.sleep(delay)
 
     if content is None and openai_key:
         try:

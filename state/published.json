@@ -393,5 +393,33 @@
     "videoId": "OyHFf8LJwS0",
     "url": "https://www.youtube.com/watch?v=OyHFf8LJwS0",
     "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-05",
+    "pgn": "2026-08-05_Korchnoi_vs_Carlsen.pgn",
+    "archive": "Korchnoi-v-Carlsen-2004-2.mp4",
+    "sizeMb": 35.3,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "template",
+    "title": "Korchnoi vs Carlsen - Smartfish Masters - 2004",
+    "status": "uploaded",
+    "videoId": "3NKWKefovcs",
+    "url": "https://www.youtube.com/watch?v=3NKWKefovcs",
+    "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-06",
+    "pgn": "2026-08-05_Korchnoi_vs_Carlsen.pgn",
+    "archive": "Korchnoi-v-Carlsen-2004-3.mp4",
+    "sizeMb": 36.8,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Six Sacrifices: Viktor Korchnoi vs a 14-Year-Old Magnus Carlsen",
+    "status": "held_audit",
+    "auditErrors": [
+      "[claims] b0032 says capturing on e3 is impossible, but fxe3 is legal \u2014 the claim is false"
+    ]
   }
 ]

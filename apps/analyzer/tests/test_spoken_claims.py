@@ -180,3 +180,27 @@ def test_engine_contradictions_block_uploads():
            / "verify_render.py").read_text(encoding="utf-8")
     assert 'rep.error("narration", f"claim contradicts' not in src
     assert 'rep.error("claims", f"claim contradicts' in src
+
+
+def test_a_contrastive_clause_flips_the_meaning():
+    """"cannot wander — but capturing is different" AFFIRMS the capture.
+
+    Held a correct Korchnoi-Carlsen render whose narration was demonstrating
+    the pin rule exactly as taught: a pinned piece cannot move away, but may
+    take the pinner, because that removes the attacker.
+    """
+    board = rossolimo_after_bxc6()
+    errors = _run_claims_check(
+        "The d7 pawn is tied to its king, so it cannot wander — but "
+        "capturing the bishop is a different matter, because that removes "
+        "the attacker altogether.",
+        board, "Bxc6",
+    )
+    assert errors == [], errors
+
+
+def test_the_real_falsehood_still_fails_without_a_contrast():
+    board = rossolimo_after_bxc6()
+    errors = _run_claims_check(
+        "The d7 pawn is pinned and so it cannot recapture.", board, "Bxc6")
+    assert errors != []

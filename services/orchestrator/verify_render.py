@@ -423,7 +423,13 @@ def check_narration(script: Dict[str, Any], facts: Dict[str, Any], rep: Report) 
     # section because these errors block uploads, and the narration section
     # mixes fact checks with style checks that should not.
     cap_claim = re.compile(
-        r"\b(?:can't|cannot|can ?not|no way to|unable to)\b[^.!?]{0,60}?"
+        r"\b(?:can't|cannot|can ?not|no way to|unable to)\b"
+        # Nothing contrastive in between. "The f2 pawn is pinned, so it cannot
+        # wander — but capturing the bishop is a different matter" AFFIRMS the
+        # capture; a "but" flips the polarity, and reading across one held a
+        # correct render whose narration was demonstrating the pin rule
+        # exactly as intended.
+        r"(?:(?!\b(?:but|however|though|although|yet|whereas|while)\b)[^.!?]){0,60}?"
         r"\b(?:recaptur\w*|captur\w*|take|takes|taking|taken)\b"
         # A quantified object is a different claim entirely: "cannot take
         # everything" says the offers outnumber the captures — true and good

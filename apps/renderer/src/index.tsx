@@ -2,6 +2,7 @@
 import {Composition, registerRoot, staticFile, CalculateMetadataFunction} from 'remotion';
 import {ChessNarration, ChessNarrationProps} from './compositions/ChessNarration';
 import {Thumbnail, ThumbnailProps} from './compositions/Thumbnail';
+import {ChessShort, ChessShortProps} from './compositions/ChessShort';
 import {ChannelWatermark, ChannelBanner} from './compositions/ChannelArt';
 import type {Script} from './types/script';
 
@@ -47,6 +48,23 @@ const thumbnailMetadata: CalculateMetadataFunction<ThumbnailProps> = async ({pro
   props: {...props, script: (props.script as Script | null) ?? (await loadScript())},
 });
 
+/**
+ * The Short's script always arrives via --props: it never lives in
+ * public/script.json, because that file belongs to the long-form build and a
+ * Short is usually cut while tomorrow's daily is rendering.
+ */
+const shortMetadata: CalculateMetadataFunction<ChessShortProps> = async ({props}) => {
+  const script = (props.script as Script | null) ?? null;
+  const totalMs = (script?.beats ?? []).reduce(
+    (sum, beat) => sum + (beat.durationMs || 1500),
+    0
+  );
+  return {
+    durationInFrames: totalMs > 0 ? Math.max(1, Math.round((totalMs / 1000) * FPS)) : 10 * FPS,
+    props: {...props, script},
+  };
+};
+
 registerRoot(() => {
   return (
     <>
@@ -75,6 +93,16 @@ registerRoot(() => {
         fps={FPS}
         width={2048}
         height={1152}
+      />
+      <Composition
+        id="ChessShort"
+        component={ChessShort}
+        durationInFrames={10 * FPS}
+        fps={FPS}
+        width={1080}
+        height={1920}
+        calculateMetadata={shortMetadata}
+        defaultProps={{audioBase: '/audio_short'}}
       />
       <Composition
         id="Thumbnail"

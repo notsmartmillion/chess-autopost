@@ -176,3 +176,16 @@ def test_a_game_with_no_strong_moment_yields_no_short():
              _beat(3, tag="good", ev=-380)]
     assert pick_hero(beats) is None
     assert select_window(beats) is None
+
+
+def test_the_short_composition_gates_on_the_reveal_and_shows_the_eval():
+    """Nothing names the move before the piece moves — the long-form learned
+    this twice, and the first Short shipped "Bd8" on screen while the bishop
+    still stood on b6. And the eval bar must exist, driven by revealed
+    positions only."""
+    src = (Path(__file__).resolve().parents[3] / "apps" / "renderer" / "src"
+           / "compositions" / "ChessShort.tsx").read_text(encoding="utf-8")
+    assert "frame >= moveStartFrame" in src, "no reveal gate"
+    assert "beat?.move && revealed" in src, "the SAN row ignores the reveal"
+    assert "shownEvalCp" in src and "Math.tanh" in src, "no eval bar"
+    assert "revealed\n" in src or "revealed ?" in src

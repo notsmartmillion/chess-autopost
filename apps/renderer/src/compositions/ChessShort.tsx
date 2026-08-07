@@ -85,12 +85,34 @@ export const ChessShort: React.FC<ChessShortProps> = ({
     (current?.from ?? 0) +
     Math.round((((beat?.moveAtMs as number) || 0) * fps) / 1000);
 
-  const badge =
-    beat?.move && !beat.branch && beat.tag && BADGE[beat.tag]
+  // Nothing names the move before the piece moves. The long-form learned
+  // this twice — first the move panel, then the variation announcement — and
+  // the first Short shipped the same spoiler: "Bd8 ★" on screen while the
+  // bishop still stood on b6. Everything below gates on the same reveal.
+  const revealed = !beat?.move || frame >= moveStartFrame;
+
+  const badge = revealed
+    ? beat?.move && !beat.branch && beat.tag && BADGE[beat.tag]
       ? {square: beat.move.to, ...BADGE[beat.tag]}
       : beat?.move && beat.branch
         ? {square: beat.move.to, ...BADGE.best}
-        : null;
+        : null
+    : null;
+
+  // The eval a viewer may see: the last position whose move has actually
+  // landed. Jumping AT the reveal is the drama; jumping before it is a spoiler.
+  const shownEvalCp = useMemo(() => {
+    let cp: number | null = null;
+    for (const seg of segments) {
+      if (seg.from > frame) break;
+      const b = seg.beat;
+      const at = seg.from + Math.round((((b.moveAtMs as number) || 0) * fps) / 1000);
+      if (!b.move || at <= frame) {
+        if (typeof b.evalCp === 'number') cp = b.evalCp;
+      }
+    }
+    return cp ?? 0;
+  }, [segments, frame, fps]);
 
   const BOARD = 1080;
   const isCta = beat?.kind === 'outro';
@@ -160,9 +182,48 @@ export const ChessShort: React.FC<ChessShortProps> = ({
               fontWeight: 700,
             }}
           >
-            {beat?.label ?? 'What should have happened'}
+            {/* The ribbon may say a branch has begun; the move's NAME waits
+                for the piece. "Better was Bd8" before Bd8 moves is the same
+                spoiler the long-form once shipped in its announcements. */}
+            {revealed
+              ? (beat?.label ?? 'What should have happened')
+              : 'What should have happened'}
           </div>
         )}
+      </div>
+
+      {/* Eval bar: white's share from the left, same tanh scale as the
+          long-form's column. Driven by revealed positions only. */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 250 + BOARD + 6,
+          left: 24,
+          right: 24,
+          height: 14,
+          borderRadius: 7,
+          overflow: 'hidden',
+          background: '#28313f',
+          border: `1px solid ${THEME.panelEdge ?? '#3a4456'}`,
+        }}
+      >
+        <div
+          style={{
+            width: `${Math.max(2, Math.min(98, 50 + Math.tanh(shownEvalCp / 400) * 50))}%`,
+            height: '100%',
+            background: '#eef2f7',
+          }}
+        />
+        <div
+          style={{
+            position: 'absolute',
+            left: '50%',
+            top: 0,
+            width: 1,
+            height: '100%',
+            background: 'rgba(255,255,255,0.22)',
+          }}
+        />
       </div>
 
       {/* Rail strip: who is playing, and the move being judged. */}
@@ -193,7 +254,7 @@ export const ChessShort: React.FC<ChessShortProps> = ({
           <span style={{color: THEME.muted, fontSize: 28}}>vs</span>
           <span>{black}</span>
         </div>
-        {beat?.move && (
+        {beat?.move && revealed && (
           <div
             style={{
               display: 'flex',

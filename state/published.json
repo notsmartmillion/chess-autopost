@@ -429,11 +429,12 @@
     "voice": "ttsapi",
     "voiceProfile": "asmr_02",
     "title": "The move nobody saw coming. Bobby Fischer vs Wolfgang Uhlmann #Shorts",
-    "status": "uploaded",
+    "status": "deleted",
     "videoId": "FJSDrRPp-sM",
     "url": "https://www.youtube.com/watch?v=FJSDrRPp-sM",
     "privacy": "public",
-    "fullVideo": "fGhYFSy56Uo"
+    "fullVideo": "fGhYFSy56Uo",
+    "note": "superseded by ndoAQTDIe28 (phone-safe layout + banner wordmark)"
   },
   {
     "date": "2026-08-08",
@@ -488,5 +489,18 @@
     "videoId": "HwMyZfuwi0M",
     "url": "https://www.youtube.com/watch?v=HwMyZfuwi0M",
     "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-08",
+    "archive": "Fischer-v-Uhlmann-1970-5-short.mp4",
+    "kind": "short",
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "title": "The move nobody saw coming. Bobby Fischer vs Wolfgang Uhlmann #Shorts",
+    "status": "uploaded",
+    "videoId": "ndoAQTDIe28",
+    "url": "https://www.youtube.com/watch?v=ndoAQTDIe28",
+    "privacy": "public",
+    "fullVideo": "fGhYFSy56Uo"
   }
 ]

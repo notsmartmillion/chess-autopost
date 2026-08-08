@@ -309,3 +309,50 @@ export function generateMetadata(script: Script, moreVideos: string[] = []): Vid
     categoryId: getCategoryId(),
   };
 }
+
+/**
+ * Metadata for a vertical Short.
+ *
+ * A Short is a funnel, not a listing: the title is the hook plus the names
+ * (never "Player vs Player, Event Year" — nobody in the Shorts feed is
+ * searching), and the description's FIRST line is the full-game link,
+ * because that click is the entire point of posting Shorts at all.
+ * Classification is automatic from aspect ratio; #Shorts in title and tags
+ * is the supporting signal.
+ */
+export function generateShortMetadata(script: Script, fullUrl?: string): VideoMetadata {
+  const meta = script.meta ?? {};
+  const white = clean(meta.whiteFull) ?? clean(meta.white) ?? 'White';
+  const black = clean(meta.blackFull) ?? clean(meta.black) ?? 'Black';
+  const hook = clean((meta as any).shortHook) ?? 'One move changed everything.';
+
+  let title = `${hook} ${white} vs ${black} #Shorts`;
+  if (title.length > 100) {
+    title = `${hook} #Shorts`;
+  }
+
+  const blocks: string[] = [];
+  if (fullUrl) {
+    blocks.push(`Full game, move by move: ${fullUrl}`);
+  }
+  const fullTitle = clean((meta as any).shortOf);
+  if (fullTitle) {
+    blocks.push(`From: ${fullTitle}`);
+  }
+  blocks.push(
+    `${clean(meta.channel) ?? 'Nocturne Chess'} — memorable games from chess ` +
+      'history, narrated calmly and checked against Stockfish. New game daily.'
+  );
+
+  const tags = [
+    'Shorts', 'chess', 'chess shorts', white, black,
+    'brilliant move', 'chess history', 'chess tactics',
+  ].filter((t) => t && t.length <= 30);
+
+  return {
+    title,
+    description: blocks.join('\n\n'),
+    tags: [...new Set(tags)],
+    categoryId: getCategoryId(),
+  };
+}

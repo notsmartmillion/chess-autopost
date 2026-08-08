@@ -421,5 +421,18 @@
     "auditErrors": [
       "[claims] b0032 says capturing on e3 is impossible, but fxe3 is legal \u2014 the claim is false"
     ]
+  },
+  {
+    "date": "2026-08-08",
+    "archive": "Fischer-v-Uhlmann-1970-5-short.mp4",
+    "kind": "short",
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "title": "The move nobody saw coming. Bobby Fischer vs Wolfgang Uhlmann #Shorts",
+    "status": "uploaded",
+    "videoId": "FJSDrRPp-sM",
+    "url": "https://www.youtube.com/watch?v=FJSDrRPp-sM",
+    "privacy": "public",
+    "fullVideo": "fGhYFSy56Uo"
   }
 ]

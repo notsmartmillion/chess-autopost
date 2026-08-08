@@ -52,10 +52,14 @@ FPS = 30
 
 # One take is the whole audio guarantee, so the budget wears a belt and
 # braces: TTS merges takes up to SYNTH_WORD_BUDGET (320) words, and the
-# selection trims to well under it. ~150 words at the narrator's ~170 wpm is
-# ~53 seconds — under the sub-60s bar the Shorts feed treats most kindly.
-MAX_WORDS = 150
-MAX_SECONDS = 60.0
+# selection trims to well under it. Target is AROUND A MINUTE — measured
+# ~163 wpm on real takes, so ~165 words lands near 60s. Sub-40s Shorts are
+# hard to monetize, so the window pulls in extra lead-up beats to fill the
+# minute with build-up rather than padding. Shorts classify by aspect ratio
+# up to three minutes, so slightly over 60s costs nothing.
+MAX_WORDS = 165
+MAX_SETUP_BEATS = 4
+MAX_SECONDS = 75.0
 MIN_SECONDS = 15.0
 
 # What earns a Short. Not a quality tag — the SWING. A "mistake" that turns
@@ -148,12 +152,17 @@ def select_window(beats: List[Dict[str, Any]]) -> Optional[Tuple[List[Dict[str, 
         return None
     hero = wow["index"]
 
-    setup: Optional[Dict[str, Any]] = None
+    # Lead-up: walk back through the mainline collecting build-up beats. The
+    # tension before the moment is what makes the moment land — and it is
+    # also what carries a Short past the sub-40s monetization floor honestly,
+    # with story rather than padding.
+    setups: List[Dict[str, Any]] = []
     for j in range(hero - 1, -1, -1):
+        if len(setups) >= MAX_SETUP_BEATS:
+            break
         b = beats[j]
         if b.get("kind") in ("move", "hold") and not b.get("branch"):
-            setup = b
-            break
+            setups.insert(0, b)
 
     last = wow["streak"][-1]
     tail: List[Dict[str, Any]] = [beats[k] for k in range(hero + 1, last + 1)]
@@ -164,15 +173,17 @@ def select_window(beats: List[Dict[str, Any]]) -> Optional[Tuple[List[Dict[str, 
     if j < len(beats) and beats[j].get("kind") == "resume":
         tail.append(beats[j])
 
-    window = ([setup] if setup else []) + [beats[hero]] + tail
+    window = setups + [beats[hero]] + tail
 
     def total() -> int:
         return sum(_words(b.get("text")) for b in window)
 
-    if total() > MAX_WORDS and setup is not None and len(window) > 1:
-        window = window[1:]  # drop setup before touching the payoff
+    # Over budget: shed lead-up from the FRONT first (the earliest context is
+    # the most expendable), then trailing beats — the payoff stays.
+    while total() > MAX_WORDS and window and window[0] is not beats[hero]:
+        window = window[1:]
     while total() > MAX_WORDS and len(window) > 2:
-        window.pop()  # trailing beats, whole beats at a time
+        window.pop()
     if total() > MAX_WORDS:
         return None
     return window, wow

@@ -82,7 +82,10 @@ def test_reversal_hooks_name_the_player_who_was_winning():
     assert make_hook("reversal", hero, meta) == "Vladimir Kramnik was winning. Then this."
 
 
-def test_window_is_setup_hero_refutation():
+def test_window_is_leadup_hero_refutation():
+    """Up to four beats of build-up: the tension is what makes the moment
+    land, and what carries a Short past the sub-40s monetization floor with
+    story rather than padding."""
     beats = [
         _beat(1), _beat(2, kind="hold"), _beat(3, tag="brilliant"),
         _beat(4, kind="variation", branch=True),
@@ -90,7 +93,7 @@ def test_window_is_setup_hero_refutation():
         _beat(6, kind="resume"), _beat(7),
     ]
     win, wow = select_window(beats)
-    assert [b["id"] for b in win] == ["b0002", "b0003", "b0004", "b0005", "b0006"]
+    assert [b["id"] for b in win] == ["b0001", "b0002", "b0003", "b0004", "b0005", "b0006"]
     assert wow["kind"] == "brilliant"
 
 
@@ -103,13 +106,13 @@ def test_a_streak_window_spans_the_whole_streak():
     assert [b["id"] for b in win] == ["b0001", "b0002", "b0003", "b0004", "b0005"]
 
 
-def test_setup_is_dropped_before_the_refutation():
+def test_leadup_is_shed_from_the_front_before_the_payoff():
     beats = [
-        _beat(1, words=60), _beat(2, tag="brilliant", words=60),
-        _beat(3, kind="variation", branch=True, words=60),
+        _beat(1, words=60), _beat(2, words=60), _beat(3, tag="brilliant", words=60),
+        _beat(4, kind="variation", branch=True, words=60),
     ]
-    win, _ = select_window(beats)  # 180 words > budget; setup goes first
-    assert [b["id"] for b in win] == ["b0002", "b0003"]
+    win, _ = select_window(beats)  # 240 words; earliest context goes first
+    assert [b["id"] for b in win] == ["b0003", "b0004"]
 
 
 def test_an_unshortable_game_yields_no_short():
@@ -198,7 +201,7 @@ def test_contract_refuses_fallback_voice(tmp_path, monkeypatch):
 
 
 def test_contract_refuses_overlong_audio(tmp_path, monkeypatch):
-    short, man = _contract_case(tmp_path, monkeypatch, secs=75.0)
+    short, man = _contract_case(tmp_path, monkeypatch, secs=90.0)
     with pytest.raises(SystemExit):
         enforce_audio_contract(short, man)
 

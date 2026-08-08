@@ -15,7 +15,7 @@ import { Command } from 'commander';
 import fs from 'fs/promises';
 import { uploadVideo, getVideoInfo, updateVideoMetadata, listVideos, verifyChannel, fileInPlaylists } from './youtube_client';
 import type { UploadOptions } from './youtube_client';
-import { generateMetadata } from './metadata';
+import { generateMetadata, generateShortMetadata } from './metadata';
 import { generateChaptersText } from './chapters';
 import type { Script } from '../renderer/src/types/script';
 
@@ -37,6 +37,8 @@ program
   .option('--publish-at <date>', 'Schedule publish date (ISO format)')
   .option('--dry-run', 'Show what would be uploaded without actually uploading')
   .option('--result-json <file>', 'Write {videoId,url,status,title} here on success')
+  .option('--short', 'This is a vertical Short: hook title, #Shorts, funnel description')
+  .option('--full-url <url>', 'Link to the full-game video (Shorts description leads with it)')
   .action(async (options) => {
     try {
       console.log('Loading script...');
@@ -45,9 +47,10 @@ program
       
       // Pull the channel's recent uploads for the "More videos" block. Best
       // effort: a new channel has none, and a failure here must not block a
-      // finished video from being published.
+      // finished video from being published. Shorts skip it — their one job
+      // is the full-game link, and extra links dilute the funnel.
       let moreVideos: string[] = [];
-      if (!options.dryRun) {
+      if (!options.dryRun && !options.short) {
         try {
           const recent = await listVideos(3);
           moreVideos = recent
@@ -60,13 +63,14 @@ https://youtu.be/${v.id.videoId}`);
       }
 
       console.log('Generating metadata...');
-      const metadata = generateMetadata(script, moreVideos);
-      
-      console.log('Generating chapters...');
-      const chaptersText = generateChaptersText(script);
-      
-      // Combine description with chapters
-      const fullDescription = metadata.description + '\n\n' + chaptersText;
+      const metadata = options.short
+        ? generateShortMetadata(script, options.fullUrl)
+        : generateMetadata(script, moreVideos);
+
+      // Chapters make no sense in a sub-minute vertical.
+      const fullDescription = options.short
+        ? metadata.description
+        : metadata.description + '\n\n' + generateChaptersText(script);
       
       const uploadOptions: UploadOptions = {
         path: options.video,

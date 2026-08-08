@@ -30,6 +30,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -76,11 +77,59 @@ REVERSAL_AFTER_CP = 50     # ...and after the move, nothing left of it
 
 TAG_PRIORITY = ("brilliant", "blunder", "great", "mistake")  # hook wording only
 
-HOOKS: Dict[str, str] = {
-    "brilliant": "The move nobody saw coming.",
-    "streak": "One brilliant blow after another.",
-    "reversal": "{loser} was winning. Then this.",
+# Hooks are drawn from what actually happened, not from the tag. Three of
+# the first four Shorts opened with the identical line, because every
+# brilliancy got one fixed string — on a feed where the hook IS the video,
+# that reads as a template.
+#
+# A "brilliant" move is, by the classifier's own definition, the only move
+# AND a sacrifice, so naming the piece offered is always true. The piece
+# comes from the SAN: an uppercase letter names it, anything else is a pawn.
+PIECE_HOOKS: Dict[str, Tuple[str, ...]] = {
+    "Q": (
+        "He gave his queen away.",
+        "The queen, offered for nothing.",
+        "Who gives up a queen here?",
+    ),
+    "R": (
+        "He left a rook hanging on purpose.",
+        "A rook, offered and meant.",
+        "The rook was never the point.",
+    ),
+    "B": (
+        "The bishop was there to be taken.",
+        "He threw a bishop into it.",
+        "A bishop, and no way to refuse.",
+    ),
+    "N": (
+        "The knight walked in unprotected.",
+        "He put a knight where it could not stand.",
+        "A knight, offered to everything.",
+    ),
+    "P": (
+        "One pawn nobody was allowed to take.",
+        "A pawn, thrown forward and left there.",
+        "It starts with a pawn.",
+    ),
 }
+GENERIC_HOOKS: Tuple[str, ...] = (
+    "The move nobody saw coming.",
+    "One move, and the game breaks open.",
+    "This should not work. It does.",
+    "Watch what he does here.",
+)
+STREAK_HOOKS: Tuple[str, ...] = (
+    "One brilliant blow after another.",
+    "He kept giving pieces away.",
+    "{n} sacrifices, one idea.",
+    "It did not stop at one.",
+)
+REVERSAL_HOOKS: Tuple[str, ...] = (
+    "{loser} was winning. Then this.",
+    "{loser} had it won.",
+    "One move threw the whole game away.",
+    "{loser} never recovered from this.",
+)
 
 
 def _words(text: Optional[str]) -> int:
@@ -132,13 +181,54 @@ def find_wow(beats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return None
 
 
-def make_hook(kind: str, hero: Dict[str, Any], meta: Dict[str, Any]) -> str:
-    template = HOOKS[kind]
+def _sacrificed_piece(hero: Dict[str, Any]) -> Optional[str]:
+    """Which piece was offered, from the SAN. None when it cannot be read."""
+    san = ((hero.get("move") or {}).get("san") or "").lstrip("(")
+    if not san:
+        return None
+    first = san[0]
+    if first in "QRBNK":
+        return first
+    return "P" if first.islower() else None
+
+
+def make_hook(
+    kind: str, hero: Dict[str, Any], meta: Dict[str, Any], streak: int = 1
+) -> str:
+    """A hook drawn from this game, chosen the same way every rebuild.
+
+    Seeded on the pairing and the move, so a Short rebuilt after a layout
+    change keeps the line it was published with, while a different game gets
+    a different one. crc32, not hash() — Python salts hash() per process,
+    which would make "stable" a coin flip between runs.
+    """
+    seed = zlib.crc32(
+        "|".join(str(x) for x in (
+            meta.get("white"), meta.get("black"), meta.get("date"),
+            (hero.get("move") or {}).get("san"), kind,
+        )).encode("utf-8")
+    )
+
     if kind == "reversal":
         loser = meta.get("whiteFull") if _mover_is_white(hero) else meta.get("blackFull")
         loser = loser or ("White" if _mover_is_white(hero) else "Black")
-        return template.format(loser=loser)
-    return template
+        return REVERSAL_HOOKS[seed % len(REVERSAL_HOOKS)].format(loser=loser)
+
+    if kind == "streak":
+        # Spelt, not numeric: "2 sacrifices" reads like a spec sheet on screen
+        # and the voice says the word anyway.
+        words = {2: "Two", 3: "Three", 4: "Four", 5: "Five"}
+        pool = [h for h in STREAK_HOOKS if "{n}" not in h or streak in words]
+        return pool[seed % len(pool)].format(n=words.get(streak, str(streak)))
+
+    # A brilliancy is an only-move sacrifice, so naming the offered piece is
+    # always true — and far stronger than a generic line, which is why the
+    # generic pool is a fallback for an unreadable SAN rather than an equal
+    # sibling. Two knight sacrifices drew "Watch what he does here" while
+    # "The knight walked in unprotected" sat unused.
+    piece = _sacrificed_piece(hero)
+    pool = list(PIECE_HOOKS.get(piece or "", ())) or list(GENERIC_HOOKS)
+    return pool[seed % len(pool)]
 
 
 def select_window(beats: List[Dict[str, Any]]) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
@@ -197,7 +287,8 @@ def build_short_script(script: Dict[str, Any], full_url: Optional[str]) -> Optio
         return None
     window, wow = selected
 
-    hook_text = make_hook(wow["kind"], beats[wow["index"]], meta)
+    hook_text = make_hook(wow["kind"], beats[wow["index"]], meta,
+                          streak=len(wow.get("streak") or [1]))
 
     white = meta.get("whiteFull") or meta.get("white") or "White"
     black = meta.get("blackFull") or meta.get("black") or "Black"

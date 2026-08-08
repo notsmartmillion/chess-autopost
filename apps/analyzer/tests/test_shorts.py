@@ -283,3 +283,61 @@ def test_the_short_carries_the_channel_wordmark():
     assert asset.exists(), "the wordmark asset is missing from public/"
     # Remotion only waits for <Img>, never a bare <img>, before capturing.
     assert "<Img" in src and "src={staticFile('brand/wordmark.png')}" in src
+
+
+def _hero(san, ply=11):
+    return {"move": {"from": "a1", "to": "a2", "san": san}, "ply": ply}
+
+
+def test_the_hook_names_the_piece_that_was_offered():
+    """A brilliancy IS an only-move sacrifice by the classifier's definition,
+    so naming the offered piece is always true — and far stronger than a
+    generic line. Three of the first four Shorts opened identically."""
+    from build_short import make_hook
+
+    meta = {"white": "A", "black": "B", "date": "1970"}
+    assert "queen" in make_hook("brilliant", _hero("Qxh7"), meta).lower()
+    assert "rook" in make_hook("brilliant", _hero("Rxd4"), meta).lower()
+    assert "knight" in make_hook("brilliant", _hero("Nxd5"), meta).lower()
+    assert "bishop" in make_hook("brilliant", _hero("Bxf7"), meta).lower()
+    assert "pawn" in make_hook("brilliant", _hero("c5"), meta).lower()
+
+
+def test_the_same_game_always_gets_the_same_hook():
+    """Shorts are rebuilt often — a layout fix must not silently rewrite the
+    headline a video was published with. crc32, never hash()."""
+    from build_short import make_hook
+
+    meta = {"white": "Fischer", "black": "Uhlmann", "date": "1970.??.??"}
+    first = make_hook("brilliant", _hero("c5"), meta)
+    assert all(make_hook("brilliant", _hero("c5"), meta) == first for _ in range(5))
+
+
+def test_different_games_get_different_hooks():
+    from build_short import make_hook
+
+    hooks = {
+        make_hook("brilliant", _hero("Nxd5"), {"white": w, "black": "X", "date": "1900"})
+        for w in ("Lasker", "Morphy", "Tal", "Keres", "Alekhine")
+    }
+    assert len(hooks) > 1, "every game draws the same line"
+
+
+def test_a_reversal_hook_names_the_player_who_was_winning():
+    from build_short import make_hook
+
+    meta = {"white": "Kramnik", "black": "Aronian",
+            "whiteFull": "Vladimir Kramnik", "blackFull": "Levon Aronian",
+            "date": "2012"}
+    h = make_hook("reversal", _hero("Kg7", ply=13), meta)
+    assert "Vladimir Kramnik" in h or "threw the whole game away" in h
+
+
+def test_a_streak_hook_spells_its_number():
+    """"2 sacrifices" reads like a spec sheet on screen."""
+    from build_short import make_hook, STREAK_HOOKS
+
+    meta = {"white": "Kasparov", "black": "Topalov", "date": "1999"}
+    for n in (2, 3, 4):
+        h = make_hook("streak", _hero("Rxd4"), meta, streak=n)
+        assert not any(ch.isdigit() for ch in h), h

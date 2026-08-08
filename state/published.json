@@ -434,5 +434,19 @@
     "url": "https://www.youtube.com/watch?v=FJSDrRPp-sM",
     "privacy": "public",
     "fullVideo": "fGhYFSy56Uo"
+  },
+  {
+    "date": "2026-08-08",
+    "pgn": "2026-08-08_Kasparov_vs_Topalov.pgn",
+    "archive": "Kasparov-v-Topalov-1999.mp4",
+    "sizeMb": 57.5,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Garry Kasparov Chased a King Across the Entire Board",
+    "status": "held_audit",
+    "auditErrors": [
+      "[claims] b0085 says capturing on d7 is impossible, but Rxd7 is legal \u2014 the claim is false"
+    ]
   }
 ]

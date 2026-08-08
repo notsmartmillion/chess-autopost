@@ -204,3 +204,24 @@ def test_the_real_falsehood_still_fails_without_a_contrast():
     errors = _run_claims_check(
         "The d7 pawn is pinned and so it cannot recapture.", board, "Bxc6")
     assert errors != []
+
+
+def test_a_dash_clause_owns_its_own_polarity():
+    """"cannot wander off — it can only take the rook" AFFIRMS the capture.
+
+    Kasparov's Immortal was held for this: the narration taught the pin rule
+    correctly, and the checker read the negation across the em-dash into the
+    affirming clause. A dash, semicolon or colon starts a new clause; the
+    negation only owns the words in its own.
+    """
+    board = rossolimo_after_bxc6()
+    errors = _run_claims_check(
+        "The d7 pawn is standing in front of its own king, so it cannot "
+        "wander off — it can only take the bishop that is pinning it.",
+        board, "Bxc6",
+    )
+    assert errors == [], errors
+    # And the boundary must not blind it to a real negated capture.
+    errors = _run_claims_check(
+        "The d7 pawn is pinned; it cannot take the bishop.", board, "Bxc6")
+    assert errors != []

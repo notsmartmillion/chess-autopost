@@ -2,6 +2,7 @@ import React, {useMemo} from 'react';
 import {
   AbsoluteFill,
   Audio,
+  Img,
   Sequence,
   interpolate,
   staticFile,
@@ -267,14 +268,38 @@ export const ChessShort: React.FC<ChessShortProps> = ({
         )}
       </div>
 
-      {/* CTA band: fades up during the outro beat. Positioned from the TOP
-          so it stays above YouTube's bottom overlay (caption, channel row,
-          share bar cover roughly the last quarter of the screen — the first
-          posted Short's CTA was completely hidden under them). */}
+      {/* Channel mark: the banner's own wordmark rather than the channel name
+          set in the video's font, so a Short carries the same identity a
+          viewer sees on the channel page. Cropped from the banner and
+          feathered at the edges, so it melts into the background instead of
+          sitting in a visible rectangle.
+
+          Positioned from the TOP so it stays above YouTube's bottom overlay
+          (caption, channel row and share bar cover roughly the last quarter
+          of the screen — the first posted Short's CTA was hidden under
+          them). */}
       <div
         style={{
           position: 'absolute',
-          top: BOARD_TOP + BOARD + 170,
+          top: BOARD_TOP + BOARD + 150,
+          left: 0,
+          right: 0,
+          display: 'flex',
+          justifyContent: 'center',
+          opacity: 0.92,
+        }}
+      >
+        <Img
+          src={staticFile('brand/wordmark.png')}
+          style={{width: 520, height: 'auto'}}
+        />
+      </div>
+
+      {/* CTA line: fades up during the outro, under the mark. */}
+      <div
+        style={{
+          position: 'absolute',
+          top: BOARD_TOP + BOARD + 320,
           left: SAFE_X,
           right: SAFE_X,
           textAlign: 'center',
@@ -285,11 +310,11 @@ export const ChessShort: React.FC<ChessShortProps> = ({
                 [0, 1],
                 {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'}
               )
-            : 0.75,
+            : 0,
         }}
       >
         <div style={{fontSize: 34, color: THEME.muted}}>
-          {isCta ? 'Full game on the channel' : meta.channel ?? 'Nocturne Chess'}
+          Full game on the channel
         </div>
       </div>
 

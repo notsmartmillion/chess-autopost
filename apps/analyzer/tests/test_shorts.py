@@ -251,3 +251,15 @@ def test_the_short_layout_stays_inside_the_phone_crop():
     )
     # Text must clear the player UI: chrome at the top, controls at the bottom.
     assert const("BOARD_TOP") >= 300, "the board sits under the top overlay"
+
+
+def test_the_short_carries_the_channel_wordmark():
+    """A Short signs off with the banner's own mark, not the channel name set
+    in the video's font — same identity a viewer sees on the channel page."""
+    root = Path(__file__).resolve().parents[3] / "apps" / "renderer"
+    src = (root / "src" / "compositions" / "ChessShort.tsx").read_text(encoding="utf-8")
+    assert "brand/wordmark.png" in src, "the Short does not use the wordmark"
+    asset = root / "public" / "brand" / "wordmark.png"
+    assert asset.exists(), "the wordmark asset is missing from public/"
+    # Remotion only waits for <Img>, never a bare <img>, before capturing.
+    assert "<Img" in src and "src={staticFile('brand/wordmark.png')}" in src

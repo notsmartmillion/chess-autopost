@@ -219,3 +219,35 @@ def test_the_short_composition_gates_on_the_reveal_and_shows_the_eval():
         "no eval column — vertical, beside the board, like the long form"
     )
     assert "revealed\n" in src or "revealed ?" in src
+
+
+def test_the_short_layout_stays_inside_the_phone_crop():
+    """Shorts are cropped at the sides on tall phones.
+
+    A 9:16 video on a 20:9 screen is scaled to fill the height, cutting
+    ~108 px per side. The first posted Short ran the board edge to edge and
+    lost its a-file and its whole eval column — seen live on a phone. Every
+    element now lives inside the safe area, and YouTube's own top and bottom
+    overlays are kept clear too.
+    """
+    src = (Path(__file__).resolve().parents[3] / "apps" / "renderer" / "src"
+           / "compositions" / "ChessShort.tsx").read_text(encoding="utf-8")
+    import re as _re
+
+    def const(name: str) -> int:
+        m = _re.search(rf"const {name} = (\d+)", src)
+        assert m, f"{name} is gone from the layout"
+        return int(m.group(1))
+
+    safe_x, board, eval_w, gap = (const("SAFE_X"), const("BOARD"),
+                                  const("EVAL_W"), const("EVAL_GAP"))
+    CROP = 108  # 20:9, the tightest common phone
+    assert safe_x >= CROP, "the board starts inside the cropped margin"
+    right_edge = safe_x + board + gap + eval_w
+    # The eval column's NUMBER is wider than the column itself, so the group
+    # needs slack, not just a hairline fit.
+    assert right_edge <= 1080 - CROP - 30, (
+        f"the eval column ends at {right_edge}px, too close to the crop seam"
+    )
+    # Text must clear the player UI: chrome at the top, controls at the bottom.
+    assert const("BOARD_TOP") >= 300, "the board sits under the top overlay"

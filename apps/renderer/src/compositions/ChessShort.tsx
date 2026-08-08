@@ -114,11 +114,21 @@ export const ChessShort: React.FC<ChessShortProps> = ({
     return cp ?? 0;
   }, [segments, frame, fps]);
 
-  // The board gives up a strip on the right for the eval column — vertical,
-  // beside the board, the way every chess viewer's eye expects it. A
-  // horizontal bar under the board read as a progress bar, not an eval.
-  const BOARD = 1004;
-  const EVAL_W = 30;
+  // THE PHONE CROPS THE SIDES. A 9:16 video on a 19.5:9-20:9 screen is
+  // scaled to fill the height, which cuts roughly 10% off each edge — the
+  // first posted Short lost its a-file and the whole eval column to exactly
+  // this (seen live, screenshotted from a phone). Everything that matters
+  // lives inside the central safe area; the margins are background only.
+  // YouTube's own UI also overlays the top ~110px and the bottom ~25%, so
+  // text keeps clear of both.
+  // 20:9 is the tightest common phone, cropping 108 px per side. The board
+  // group sits inside that with room to spare, because the eval column's
+  // NUMBER is wider than the column and would otherwise sit on the seam.
+  const SAFE_X = 110;
+  const BOARD = 780;
+  const EVAL_W = 28;
+  const EVAL_GAP = 12;
+  const BOARD_TOP = 360;
   const isCta = beat?.kind === 'outro';
   const inVariation = Boolean(beat?.branch);
 
@@ -129,18 +139,19 @@ export const ChessShort: React.FC<ChessShortProps> = ({
         fontFamily: 'Inter, "Segoe UI", system-ui, sans-serif',
       }}
     >
-      {/* Hook band. Present from frame 0 — it is the feed thumbnail. */}
+      {/* Hook band. Present from frame 0 — it is the feed thumbnail. Starts
+          below the player UI's top overlay and stays inside the side-crop
+          safe area. */}
       <div
         style={{
           position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 240,
+          top: 130,
+          left: SAFE_X,
+          right: SAFE_X,
+          height: 210,
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          padding: '0 48px',
           textAlign: 'center',
         }}
       >
@@ -157,8 +168,8 @@ export const ChessShort: React.FC<ChessShortProps> = ({
         </div>
       </div>
 
-      {/* Board, full width. */}
-      <div style={{position: 'absolute', top: 250, left: 0, width: BOARD, height: BOARD}}>
+      {/* Board, filling the safe width beside its eval column. */}
+      <div style={{position: 'absolute', top: BOARD_TOP, left: SAFE_X, width: BOARD, height: BOARD}}>
         <AnimatedBoard
           prevFen={boardPrevFen}
           fen={boardFen}
@@ -202,8 +213,8 @@ export const ChessShort: React.FC<ChessShortProps> = ({
       <div
         style={{
           position: 'absolute',
-          top: 250,
-          left: BOARD + Math.round((1080 - BOARD - EVAL_W) / 2),
+          top: BOARD_TOP,
+          left: SAFE_X + BOARD + EVAL_GAP,
           width: EVAL_W,
           height: BOARD,
         }}
@@ -215,10 +226,9 @@ export const ChessShort: React.FC<ChessShortProps> = ({
       <div
         style={{
           position: 'absolute',
-          top: 250 + BOARD + 26,
-          left: 0,
-          right: 0,
-          padding: '0 48px',
+          top: BOARD_TOP + BOARD + 30,
+          left: SAFE_X,
+          right: SAFE_X,
           display: 'flex',
           flexDirection: 'column',
           gap: 18,
@@ -257,15 +267,17 @@ export const ChessShort: React.FC<ChessShortProps> = ({
         )}
       </div>
 
-      {/* CTA band: fades up during the outro beat. */}
+      {/* CTA band: fades up during the outro beat. Positioned from the TOP
+          so it stays above YouTube's bottom overlay (caption, channel row,
+          share bar cover roughly the last quarter of the screen — the first
+          posted Short's CTA was completely hidden under them). */}
       <div
         style={{
           position: 'absolute',
-          bottom: 60,
-          left: 0,
-          right: 0,
+          top: BOARD_TOP + BOARD + 170,
+          left: SAFE_X,
+          right: SAFE_X,
           textAlign: 'center',
-          padding: '0 48px',
           opacity: isCta
             ? interpolate(
                 frame,

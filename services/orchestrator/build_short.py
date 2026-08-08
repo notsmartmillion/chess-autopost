@@ -348,8 +348,17 @@ def verify_rendered(short: Dict[str, Any], mp4: Path) -> None:
     """The rendered file must match the script it claims to be."""
     from tts import _ffmpeg
 
+    # ffprobe sits beside ffmpeg, but the resolved path can be any casing —
+    # WinGet hands back "ffmpeg.EXE", so a case-sensitive replace silently
+    # left the path pointing at ffmpeg and ran it with ffprobe's arguments.
     ff = _ffmpeg()
-    probe = (ff or "ffmpeg").replace("ffmpeg.exe", "ffprobe.exe")
+    probe = shutil.which("ffprobe") or shutil.which("ffprobe.exe")
+    if not probe and ff:
+        cand = Path(ff).with_name("ffprobe" + Path(ff).suffix)
+        probe = str(cand) if cand.exists() else None
+    if not probe:
+        print("[short] ffprobe not found; skipping the render check")
+        return
     out = subprocess.run(
         [probe, "-v", "error",
          "-show_entries", "format=duration:stream=codec_type,width,height",
@@ -427,10 +436,13 @@ def main() -> int:
     stem = src.stem + "-short"
     out_mp4 = Path(args.out) if args.out else SHORTS_DIR / stem / f"{stem}.mp4"
     render_short(short, out_mp4)
-    verify_rendered(short, out_mp4)
-
+    # The script lands with the video, before the check. A crash between the
+    # two used to leave a new mp4 beside the previous run's json, and the
+    # next verification then compared a 59 s video against a 23 s script and
+    # called the render broken.
     (out_mp4.parent / f"{stem}.json").write_text(
         json.dumps(short, indent=2, ensure_ascii=False), encoding="utf-8")
+    verify_rendered(short, out_mp4)
     print(f"[short] done -> {out_mp4}")
     return 0
 

@@ -58,13 +58,24 @@ MAX_WORDS = 150
 MAX_SECONDS = 60.0
 MIN_SECONDS = 15.0
 
-TAG_PRIORITY = ("brilliant", "blunder", "great", "mistake")
+# What earns a Short. Not a quality tag — the SWING. A "mistake" that turns
+# -2.4 into -4.1 is a losing player losing harder, and cutting it as "the
+# moment it started to slip" put a false headline over a true eval bar. Two
+# things reliably make a stranger stop scrolling:
+#
+#   * a brilliancy — a sound sacrifice, rarer still in a streak, and
+#   * a reversal — a player who was clearly winning and threw it away.
+#
+# Everything else is a fine long-form moment and no Short at all.
+REVERSAL_BEFORE_CP = 250   # "sure of victory": +2.5 for the mover
+REVERSAL_AFTER_CP = 50     # ...and after the move, nothing left of it
+
+TAG_PRIORITY = ("brilliant", "blunder", "great", "mistake")  # hook wording only
 
 HOOKS: Dict[str, str] = {
     "brilliant": "The move nobody saw coming.",
-    "great": "One move to hold everything together.",
-    "blunder": "One move threw the game away.",
-    "mistake": "The moment it started to slip.",
+    "streak": "One brilliant blow after another.",
+    "reversal": "{loser} was winning. Then this.",
 }
 
 
@@ -72,60 +83,70 @@ def _words(text: Optional[str]) -> int:
     return len((text or "").split())
 
 
-TAG_SCORE = {"brilliant": 5, "blunder": 4, "great": 3, "mistake": 2}
-# The refutation is the payoff of the format — setup, disaster, and what
-# should have happened. A blunder with its branch attached makes a stronger
-# Short than a lone tagged move, however shiny: the first cut of this
-# selector picked a bare "great" and produced nineteen thin seconds.
-REFUTATION_BONUS = 3
+def _mover_is_white(beat: Dict[str, Any]) -> bool:
+    return ((beat.get("ply") or 0) % 2) == 1
 
 
-def _has_refutation(beats: List[Dict[str, Any]], i: int) -> bool:
-    j = i + 1
-    return j < len(beats) and beats[j].get("kind") == "variation" \
-        and bool(beats[j].get("branch"))
+def find_wow(beats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The one moment worth a Short, or None.
 
-
-def pick_hero(beats: List[Dict[str, Any]]) -> Optional[int]:
-    """Index of the beat worth a Short.
-
-    Tag quality plus a large bonus for a refutation that follows. Played
-    brilliancies never carry a branch (deliberately, since the variation
-    policy change), so they compete on their own drama; errors compete with
-    their punishment attached. Ties break toward the stronger tag, then the
-    earlier moment.
+    Returns {"index", "kind": "brilliant"|"reversal", "streak": [indices]}.
+    A brilliancy streak (consecutive brilliant moves) beats a lone
+    brilliancy beats a reversal, and the reversal must be measured against
+    the eval — the mover was clearly winning before and is not after.
     """
-    moves = [i for i, b in enumerate(beats) if b.get("kind") == "move"]
-    scored: List[Tuple[float, int, int]] = []
+    moves = [i for i, b in enumerate(beats)
+             if b.get("kind") == "move" and not b.get("branch")]
+
+    # Brilliancies, grouped into consecutive streaks (by mainline order).
+    brilliant = [i for i in moves if beats[i].get("tag") == "brilliant"]
+    streaks: List[List[int]] = []
+    for i in brilliant:
+        pos = moves.index(i)
+        if streaks and moves.index(streaks[-1][-1]) in (pos - 1, pos - 2):
+            # Same player's consecutive turns sit two plies apart.
+            streaks[-1].append(i)
+        else:
+            streaks.append([i])
+    if streaks:
+        best = max(streaks, key=len)
+        return {"index": best[0], "kind": "streak" if len(best) > 1 else "brilliant",
+                "streak": best}
+
+    # Reversals: the mover was clearly winning, and after this move is not.
+    prev_eval: Optional[float] = None
     for i in moves:
         b = beats[i]
-        tag = b.get("tag")
-        if b.get("branch") or tag not in TAG_SCORE:
-            continue
-        score = TAG_SCORE[tag] + (REFUTATION_BONUS if _has_refutation(beats, i) else 0)
-        pri = TAG_PRIORITY.index(tag)
-        scored.append((score, -pri, -i))
-    if not scored:
-        # No brilliancy, no blunder, nothing great and nothing punished:
-        # this game has no 45 seconds worth a stranger's attention. Silence
-        # beats filler — and this also refuses degenerate scripts outright
-        # (a template-prose build almost became a Short through the old
-        # eval-swing fallback here).
-        return None
-    score, neg_pri, neg_i = max(scored)
-    return -neg_i
+        ev = b.get("evalCp")
+        if b.get("tag") in ("blunder", "mistake") and                 isinstance(prev_eval, (int, float)) and isinstance(ev, (int, float)):
+            sign = 1 if _mover_is_white(b) else -1
+            before_m, after_m = sign * prev_eval, sign * ev
+            if before_m >= REVERSAL_BEFORE_CP and after_m <= REVERSAL_AFTER_CP:
+                return {"index": i, "kind": "reversal", "streak": [i]}
+        if isinstance(ev, (int, float)):
+            prev_eval = ev
+    return None
 
 
-def select_window(beats: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
-    """The hero move, one beat of setup, and the refutation that follows.
+def make_hook(kind: str, hero: Dict[str, Any], meta: Dict[str, Any]) -> str:
+    template = HOOKS[kind]
+    if kind == "reversal":
+        loser = meta.get("whiteFull") if _mover_is_white(hero) else meta.get("blackFull")
+        loser = loser or ("White" if _mover_is_white(hero) else "Black")
+        return template.format(loser=loser)
+    return template
 
-    Trimming order when over budget: setup first, then trailing variation
-    beats — the refutation is the payoff, but a refutation cut mid-thought is
-    worse than none, so variations drop from the end as whole beats.
+
+def select_window(beats: List[Dict[str, Any]]) -> Optional[Tuple[List[Dict[str, Any]], Dict[str, Any]]]:
+    """The wow moment, one beat of setup, the streak, and the refutation.
+
+    Trimming order when over budget: setup first, then trailing beats — the
+    payoff stays. Returns (window, wow) or None.
     """
-    hero = pick_hero(beats)
-    if hero is None:
+    wow = find_wow(beats)
+    if wow is None:
         return None
+    hero = wow["index"]
 
     setup: Optional[Dict[str, Any]] = None
     for j in range(hero - 1, -1, -1):
@@ -134,8 +155,9 @@ def select_window(beats: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]
             setup = b
             break
 
-    tail: List[Dict[str, Any]] = []
-    j = hero + 1
+    last = wow["streak"][-1]
+    tail: List[Dict[str, Any]] = [beats[k] for k in range(hero + 1, last + 1)]
+    j = last + 1
     while j < len(beats) and beats[j].get("kind") == "variation" and beats[j].get("branch"):
         tail.append(beats[j])
         j += 1
@@ -148,25 +170,23 @@ def select_window(beats: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]
         return sum(_words(b.get("text")) for b in window)
 
     if total() > MAX_WORDS and setup is not None and len(window) > 1:
-        window = window[1:]  # drop setup before touching the refutation
+        window = window[1:]  # drop setup before touching the payoff
     while total() > MAX_WORDS and len(window) > 2:
-        window.pop()  # trailing variation/resume beats, whole beats at a time
+        window.pop()  # trailing beats, whole beats at a time
     if total() > MAX_WORDS:
-        # A single enormous hero beat: not Short material.
         return None
-    return window
+    return window, wow
 
 
 def build_short_script(script: Dict[str, Any], full_url: Optional[str]) -> Optional[Dict[str, Any]]:
     beats = script.get("beats") or []
     meta = dict(script.get("meta") or {})
-    window = select_window(beats)
-    if not window:
+    selected = select_window(beats)
+    if not selected:
         return None
+    window, wow = selected
 
-    hero = next((b for b in window if b.get("kind") == "move" and b.get("tag")), None)
-    tag = (hero or {}).get("tag") or "great"
-    hook_text = HOOKS.get(tag, HOOKS["great"])
+    hook_text = make_hook(wow["kind"], beats[wow["index"]], meta)
 
     white = meta.get("whiteFull") or meta.get("white") or "White"
     black = meta.get("blackFull") or meta.get("black") or "Black"

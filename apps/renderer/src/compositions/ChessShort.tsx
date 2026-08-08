@@ -9,7 +9,7 @@ import {
   useVideoConfig,
 } from 'remotion';
 import {AnimatedBoard} from '../components/AnimatedBoard';
-import {THEME} from '../components/AnalysisRail';
+import {EvalColumn, THEME} from '../components/AnalysisRail';
 import type {Beat, Script} from '../types/script';
 
 export type ChessShortProps = {
@@ -114,7 +114,11 @@ export const ChessShort: React.FC<ChessShortProps> = ({
     return cp ?? 0;
   }, [segments, frame, fps]);
 
-  const BOARD = 1080;
+  // The board gives up a strip on the right for the eval column — vertical,
+  // beside the board, the way every chess viewer's eye expects it. A
+  // horizontal bar under the board read as a progress bar, not an eval.
+  const BOARD = 1004;
+  const EVAL_W = 30;
   const isCta = beat?.kind === 'outro';
   const inVariation = Boolean(beat?.branch);
 
@@ -192,38 +196,19 @@ export const ChessShort: React.FC<ChessShortProps> = ({
         )}
       </div>
 
-      {/* Eval bar: white's share from the left, same tanh scale as the
-          long-form's column. Driven by revealed positions only. */}
+      {/* Eval column: the long-form's own component, vertical beside the
+          board, driven by revealed positions only — the bar jumping AT the
+          reveal is the drama; jumping before it was the spoiler. */}
       <div
         style={{
           position: 'absolute',
-          top: 250 + BOARD + 6,
-          left: 24,
-          right: 24,
-          height: 14,
-          borderRadius: 7,
-          overflow: 'hidden',
-          background: '#28313f',
-          border: `1px solid ${THEME.panelEdge ?? '#3a4456'}`,
+          top: 250,
+          left: BOARD + Math.round((1080 - BOARD - EVAL_W) / 2),
+          width: EVAL_W,
+          height: BOARD,
         }}
       >
-        <div
-          style={{
-            width: `${Math.max(2, Math.min(98, 50 + Math.tanh(shownEvalCp / 400) * 50))}%`,
-            height: '100%',
-            background: '#eef2f7',
-          }}
-        />
-        <div
-          style={{
-            position: 'absolute',
-            left: '50%',
-            top: 0,
-            width: 1,
-            height: '100%',
-            background: 'rgba(255,255,255,0.22)',
-          }}
-        />
+        <EvalColumn cp={shownEvalCp} height={BOARD} width={EVAL_W} />
       </div>
 
       {/* Rail strip: who is playing, and the move being judged. */}

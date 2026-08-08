@@ -300,19 +300,34 @@ export async function listVideos(maxResults: number = 50): Promise<any[]> {
     .filter(Boolean) as string[];
   if (!ids.length) return [];
 
-  // search.list carries no privacy status, so ask for it explicitly.
+  // search.list carries neither privacy nor duration, so ask for both.
   const details = await youtube.videos.list({
-    part: ['status'],
+    part: ['status', 'contentDetails'],
     id: ids,
   });
-  const isPublic = new Set(
+
+  // ISO 8601 duration -> seconds, enough for PT#M#S shapes.
+  const seconds = (iso: string): number => {
+    const m = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/.exec(iso || '');
+    if (!m) return 0;
+    return (+(m[1] || 0)) * 3600 + (+(m[2] || 0)) * 60 + (+(m[3] || 0));
+  };
+
+  const eligible = new Set(
     (details.data.items || [])
-      .filter((v: any) => v?.status?.privacyStatus === 'public')
+      .filter((v: any) => {
+        if (v?.status?.privacyStatus !== 'public') return false;
+        // Shorts stay out of a long-form video's "More videos" block. Their
+        // titles carry "#Shorts", which then appears in the description of a
+        // thirteen-minute analysis and reads like a mislabel — and the pull
+        // a Short is meant to exert is INTO the long game, not away from it.
+        return seconds(v?.contentDetails?.duration) > 180;
+      })
       .map((v: any) => v.id as string)
   );
 
   return items
-    .filter((i: any) => isPublic.has(i?.id?.videoId))
+    .filter((i: any) => eligible.has(i?.id?.videoId))
     .slice(0, maxResults);
 }
 

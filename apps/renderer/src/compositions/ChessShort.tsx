@@ -116,19 +116,23 @@ export const ChessShort: React.FC<ChessShortProps> = ({
   }, [segments, frame, fps]);
 
   // THE PHONE CROPS THE SIDES. A 9:16 video on a 19.5:9-20:9 screen is
-  // scaled to fill the height, which cuts roughly 10% off each edge — the
-  // first posted Short lost its a-file and the whole eval column to exactly
-  // this (seen live, screenshotted from a phone). Everything that matters
-  // lives inside the central safe area; the margins are background only.
-  // YouTube's own UI also overlays the top ~110px and the bottom ~25%, so
-  // text keeps clear of both.
-  // 20:9 is the tightest common phone, cropping 108 px per side. The board
-  // group sits inside that with room to spare, because the eval column's
-  // NUMBER is wider than the column and would otherwise sit on the seam.
-  const SAFE_X = 110;
-  const BOARD = 780;
+  // scaled to fill the height, cutting ~108 px per edge at the tightest
+  // common aspect — the first posted Short lost its a-file and its whole
+  // eval column to exactly this, seen on a real phone. Everything that
+  // matters lives inside that safe area, with room to spare because the
+  // eval column's NUMBER is wider than the column itself. YouTube's own UI
+  // overlays the top ~110 px and the bottom quarter, so text clears both.
+  //
+  // ONE CENTRE LINE. The board and its eval column are centred as a single
+  // unit, and every text row centres on the same axis. Laying the board out
+  // from a left margin instead put its centre 20 px off the frame's, so the
+  // names and the wordmark hung visibly right of the board they belong to.
+  const BOARD = 760;
   const EVAL_W = 28;
   const EVAL_GAP = 12;
+  const GROUP_W = BOARD + EVAL_GAP + EVAL_W;
+  const GROUP_X = Math.round((1080 - GROUP_W) / 2);
+  const SAFE_X = GROUP_X;
   const BOARD_TOP = 360;
   const isCta = beat?.kind === 'outro';
   const inVariation = Boolean(beat?.branch);
@@ -170,7 +174,7 @@ export const ChessShort: React.FC<ChessShortProps> = ({
       </div>
 
       {/* Board, filling the safe width beside its eval column. */}
-      <div style={{position: 'absolute', top: BOARD_TOP, left: SAFE_X, width: BOARD, height: BOARD}}>
+      <div style={{position: 'absolute', top: BOARD_TOP, left: GROUP_X, width: BOARD, height: BOARD}}>
         <AnimatedBoard
           prevFen={boardPrevFen}
           fen={boardFen}
@@ -215,7 +219,7 @@ export const ChessShort: React.FC<ChessShortProps> = ({
         style={{
           position: 'absolute',
           top: BOARD_TOP,
-          left: SAFE_X + BOARD + EVAL_GAP,
+          left: GROUP_X + BOARD + EVAL_GAP,
           width: EVAL_W,
           height: BOARD,
         }}

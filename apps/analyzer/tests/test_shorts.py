@@ -226,9 +226,7 @@ def test_the_short_layout_stays_inside_the_phone_crop():
 
     A 9:16 video on a 20:9 screen is scaled to fill the height, cutting
     ~108 px per side. The first posted Short ran the board edge to edge and
-    lost its a-file and its whole eval column — seen live on a phone. Every
-    element now lives inside the safe area, and YouTube's own top and bottom
-    overlays are kept clear too.
+    lost its a-file and its whole eval column — seen live on a phone.
     """
     src = (Path(__file__).resolve().parents[3] / "apps" / "renderer" / "src"
            / "compositions" / "ChessShort.tsx").read_text(encoding="utf-8")
@@ -239,18 +237,40 @@ def test_the_short_layout_stays_inside_the_phone_crop():
         assert m, f"{name} is gone from the layout"
         return int(m.group(1))
 
-    safe_x, board, eval_w, gap = (const("SAFE_X"), const("BOARD"),
-                                  const("EVAL_W"), const("EVAL_GAP"))
+    board, eval_w, gap = const("BOARD"), const("EVAL_W"), const("EVAL_GAP")
+    group_w = board + gap + eval_w
+    group_x = round((1080 - group_w) / 2)
     CROP = 108  # 20:9, the tightest common phone
-    assert safe_x >= CROP, "the board starts inside the cropped margin"
-    right_edge = safe_x + board + gap + eval_w
-    # The eval column's NUMBER is wider than the column itself, so the group
-    # needs slack, not just a hairline fit.
-    assert right_edge <= 1080 - CROP - 30, (
-        f"the eval column ends at {right_edge}px, too close to the crop seam"
-    )
-    # Text must clear the player UI: chrome at the top, controls at the bottom.
+    assert group_x >= CROP, "the board starts inside the cropped margin"
+    # The eval column's NUMBER is wider than the column, so the group needs
+    # slack at the seam, not a hairline fit.
+    assert group_x + group_w <= 1080 - CROP - 30, "the eval column crowds the seam"
     assert const("BOARD_TOP") >= 300, "the board sits under the top overlay"
+
+
+def test_the_board_and_the_text_share_one_centre_line():
+    """The names and the wordmark must sit on the board's axis.
+
+    Laying the board out from a left margin put its centre 20 px off the
+    frame's, and the text — centred on the frame — visibly hung right of the
+    board it belonged to.
+    """
+    src = (Path(__file__).resolve().parents[3] / "apps" / "renderer" / "src"
+           / "compositions" / "ChessShort.tsx").read_text(encoding="utf-8")
+    import re as _re
+
+    def const(name: str) -> int:
+        return int(_re.search(rf"const {name} = (\d+)", src).group(1))
+
+    group_w = const("BOARD") + const("EVAL_GAP") + const("EVAL_W")
+    group_x = round((1080 - group_w) / 2)
+    assert group_x + group_w / 2 == 540, "the board group is off the frame centre"
+    # The board and the eval column position from the centred group, and the
+    # text margins derive from it, so one edit cannot desynchronise them.
+    assert "const GROUP_X = Math.round((1080 - GROUP_W) / 2)" in src
+    assert "const SAFE_X = GROUP_X" in src
+    assert "left: GROUP_X," in src
+    assert "left: GROUP_X + BOARD + EVAL_GAP," in src
 
 
 def test_the_short_carries_the_channel_wordmark():

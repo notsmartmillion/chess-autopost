@@ -403,10 +403,11 @@
     "voiceProfile": "asmr_02",
     "narration": "template",
     "title": "Korchnoi vs Carlsen - Smartfish Masters - 2004",
-    "status": "uploaded",
+    "status": "deleted",
     "videoId": "3NKWKefovcs",
     "url": "https://www.youtube.com/watch?v=3NKWKefovcs",
-    "privacy": "unlisted"
+    "privacy": "unlisted",
+    "note": "template prose (Anthropic 401); replaced by u1mJdH1Vb_A"
   },
   {
     "date": "2026-08-06",
@@ -502,5 +503,44 @@
     "url": "https://www.youtube.com/watch?v=ndoAQTDIe28",
     "privacy": "public",
     "fullVideo": "fGhYFSy56Uo"
+  },
+  {
+    "date": "2026-08-08",
+    "archive": "Kasparov-v-Topalov-1999-short.mp4",
+    "kind": "short",
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "title": "One brilliant blow after another. Garry Kasparov vs Veselin Topalov #Shorts",
+    "status": "uploaded",
+    "videoId": "UtYLaiuYVkM",
+    "url": "https://www.youtube.com/watch?v=UtYLaiuYVkM",
+    "privacy": "public",
+    "fullVideo": "HwMyZfuwi0M"
+  },
+  {
+    "date": "2026-08-08",
+    "archive": "Byrne-v-Fischer-1956-short.mp4",
+    "kind": "short",
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "title": "The move nobody saw coming. Donald Byrne vs Bobby Fischer #Shorts",
+    "status": "uploaded",
+    "videoId": "B30D0ZcnplU",
+    "url": "https://www.youtube.com/watch?v=B30D0ZcnplU",
+    "privacy": "public",
+    "fullVideo": "Xf0V_IzfgMY"
+  },
+  {
+    "date": "2026-08-08",
+    "archive": "Morphy-v-Isouard-1858-short.mp4",
+    "kind": "short",
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "title": "The move nobody saw coming. Paul Morphy vs Duke Karl Count Isouard #Shorts",
+    "status": "uploaded",
+    "videoId": "6DPPnmPeRiw",
+    "url": "https://www.youtube.com/watch?v=6DPPnmPeRiw",
+    "privacy": "public",
+    "fullVideo": "4P4PFMJkmXw"
   }
 ]

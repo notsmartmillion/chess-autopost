@@ -570,5 +570,47 @@
     "url": "https://www.youtube.com/watch?v=dMbPp9r-_wI",
     "privacy": "public",
     "fullVideo": "4P4PFMJkmXw"
+  },
+  {
+    "date": "2026-08-09",
+    "pgn": "2026-08-09_Tal_vs_Botvinnik.pgn",
+    "archive": "Tal-v-Botvinnik-1961.mp4",
+    "sizeMb": 47.3,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Mikhail Tal Sacrificed Three Times and Mikhail Botvinnik Never Blinked",
+    "status": "uploaded",
+    "videoId": "S1eZF0_6qRg",
+    "url": "https://www.youtube.com/watch?v=S1eZF0_6qRg",
+    "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-09",
+    "pgn": "2026-08-09_Gligoric_vs_Fischer.pgn",
+    "archive": "Gligoric-v-Fischer-1970.mp4",
+    "sizeMb": 38.6,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Bobby Fischer Offered a Knight to a Rook - and It Could Not Be Taken",
+    "status": "uploaded",
+    "videoId": "Dw4v_DxejGM",
+    "url": "https://www.youtube.com/watch?v=Dw4v_DxejGM",
+    "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-09",
+    "pgn": "2026-08-09_Smyslov_vs_Larsen.pgn",
+    "archive": "Smyslov-v-Larsen-1972.mp4",
+    "sizeMb": 47.5,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Vasily Smyslov Offered a Bishop and Bent Larsen Just Refused It",
+    "status": "uploaded",
+    "videoId": "5A8MFMIFbJ0",
+    "url": "https://www.youtube.com/watch?v=5A8MFMIFbJ0",
+    "privacy": "unlisted"
   }
 ]

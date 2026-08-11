@@ -8,14 +8,6 @@
 
 import type { Script } from '../renderer/src/types/script';
 
-/** Attribution for a Commons portrait whose licence requires credit. */
-export interface PortraitCredit {
-  player?: string;
-  licence?: string;
-  author?: string;
-  url?: string;
-}
-
 export interface VideoMetadata {
   title: string;
   description: string;
@@ -179,23 +171,15 @@ export function generateDescription(script: Script, moreVideos: string[] = []): 
   }
 
   // 5. Housekeeping. The disclosure must stay if any link above is an affiliate
-  // link — that is an FTC requirement, not a stylistic choice. Photo credits
-  // are the same kind of obligation: the portraits come from Wikimedia
-  // Commons, and a CC BY-SA licence is only honoured if the credit travels
-  // with the image.
-  const credits = (script.meta as {portraitCredits?: PortraitCredit[]}).portraitCredits;
-  if (credits?.length) {
-    blocks.push(
-      [
-        'Player photographs:',
-        ...credits.map((c) =>
-          `• ${c.player} — ${c.author || 'unknown author'}, ${c.licence || 'see source'}` +
-          `${c.url ? ` (${c.url})` : ''}`
-        ),
-        'via Wikimedia Commons.',
-      ].join('\n')
-    );
-  }
+  // link — that is an FTC requirement, not a stylistic choice.
+  //
+  // Photo credits used to be listed here, block by block, for every Commons
+  // portrait whose licence asked for attribution. Removed by decision: the
+  // block ate a third of the description on a two-player game and pushed the
+  // links people actually click below the fold. The credits are still recorded
+  // in the script's meta.portraitCredits, so nothing is lost if the sourcing
+  // is revisited — the intention is to move to portraits that carry no
+  // attribution obligation at all rather than to publish uncredited CC BY-SA.
   if (l.affiliateDisclosure) blocks.push(l.affiliateDisclosure);
   if (l.contact) blocks.push(`Contact: ${l.contact}`);
   blocks.push(hashtags(script).join(' '));

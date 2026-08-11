@@ -31,6 +31,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -822,6 +823,61 @@ BEAT_CLUSTER_N = 3
 # heard were twenty-second hold beats. Below the floor the measurement is
 # noise, and a gate fed noise blocks at random.
 BEAT_MIN_MS = 4_000
+
+# --- a beat spoken in a raised voice --------------------------------------
+# The neighbourhood test above cannot see this, and Tal-Botvinnik shipped
+# because of it. Two separate blindnesses, both measured on the finished mix:
+#
+#   * The floor. 55 of that render's 101 beats were shorter than BEAT_MIN_MS,
+#     among them the worst moment in the video — b0042 at 2:49, a whole 3.9 s
+#     sentence read 5.1 semitones above the voice's centre and 5.4 dB hot,
+#     missed by a hundred milliseconds.
+#   * The comparison. Judging a beat against its own thirty seconds hides a
+#     raised PASSAGE: when three consecutive beats are all lifted, each one's
+#     neighbourhood median is lifted with it and none looks unusual. Smyslov-
+#     Larsen holds exactly that at 2:04-2:08 and drew no warning.
+#
+# So this test asks a different question — is this beat high against the
+# RENDER, not against its neighbours — and it only needs enough voiced audio
+# for a stable median, which is far less than a words-per-minute estimate
+# needs. Both conditions must hold together: pitch alone flags ordinary
+# emphasis, and every render carries a little of that. Calibrated across 32
+# finished renders: the ones a listener kept without comment top out at 2.6
+# semitones (Gligoric-Fischer) and 2.9 (Morphy-Isouard); every render that
+# drew a complaint about the narration changing sits at 3.5 or above.
+RAISED_MIN_MS = 2_500
+RAISED_SEMITONES = 3.5
+RAISED_HOT_DB = 3.0
+
+
+def find_raised_beats(
+    rows: Sequence[Tuple[str, int, int, float, Optional[float]]],
+) -> List[Tuple[str, int, float, float]]:
+    """Beats whose whole read sits above the render's own centre.
+
+    ``rows`` is (id, at_ms, duration_ms, f0, level_db) per beat. Returns
+    (id, at_ms, semitones, dDb) for each beat that is both sharp and hot
+    against the render median — a sustained lift a listener hears as a
+    different narrator, as distinct from the onset peak that opens every
+    English sentence.
+    """
+    usable = [r for r in rows if r[2] >= RAISED_MIN_MS and r[3]]
+    if len(usable) < 8:
+        return []
+    med_f0 = sorted(r[3] for r in usable)[len(usable) // 2]
+    levels = sorted(r[4] for r in usable if r[4] is not None)
+    med_lv = levels[len(levels) // 2] if levels else None
+    if not med_f0 or med_lv is None:
+        return []
+    out = []
+    for bid, at, _dur, f0, lv in usable:
+        if lv is None:
+            continue
+        semis = 12 * math.log2(f0 / med_f0)
+        ddb = lv - med_lv
+        if semis >= RAISED_SEMITONES and ddb >= RAISED_HOT_DB:
+            out.append((bid, at, semis, ddb))
+    return out
 
 
 def find_offvoice_beats(rows: Sequence[Tuple[str, int, float, Optional[float], float, int]]):
@@ -1990,6 +2046,7 @@ def _check_offvoice_beats(
     missing. Verdicts are appended to the marker the build step already reads.
     """
     rows = []
+    raised_rows = []
     at = 0
     for item in lines:
         clip = clips.get(item["id"])
@@ -1997,22 +2054,35 @@ def _check_offvoice_beats(
             continue
         dur = int(clip.get("durationMs") or 0)
         path = out_dir / (clip.get("file") or "")
-        if dur >= BEAT_MIN_MS and path.exists():
-            words = len(clip.get("words") or [])
-            rows.append((
-                item["id"], at, _median_f0(path), _level_db(path),
-                words / (dur / 60000) if words else 0.0, words,
-            ))
+        # Measured once per clip and shared by both tests — pitch and level
+        # are the expensive part, and the two tests differ only in what they
+        # compare against and how much audio they need.
+        if dur >= RAISED_MIN_MS and path.exists():
+            f0, lv = _median_f0(path), _level_db(path)
+            raised_rows.append((item["id"], at, dur, f0, lv))
+            if dur >= BEAT_MIN_MS:
+                words = len(clip.get("words") or [])
+                rows.append((
+                    item["id"], at, f0, lv,
+                    words / (dur / 60000) if words else 0.0, words,
+                ))
         at += dur
 
     try:
         different_read, _outliers, cluster = find_offvoice_beats(rows)
+        raised = find_raised_beats(raised_rows)
     except Exception as exc:  # noqa: BLE001
         # Measurement, not synthesis: never let the check cost the run.
         print(f"[tts] off-voice check skipped ({exc})")
         return
 
     defects: List[Dict[str, Any]] = []
+    for bid, bat, semis, ddb in raised:
+        defects.append({"type": "raised-beat", "beat": bid,
+                        "semitones": round(semis, 2), "dDb": round(ddb, 1)})
+        print(f"[tts] beat {bid} at {bat // 60000}:{bat % 60000 // 1000:02d} is "
+              f"{semis:+.1f} semitones and {ddb:+.1f} dB above the render's "
+              "centre — a raised read the audit will fail")
     for bid, ddb, ratio in different_read:
         defects.append({"type": "different-read", "beat": bid,
                         "dDb": round(ddb, 1), "wpmRatio": round(ratio, 2)})

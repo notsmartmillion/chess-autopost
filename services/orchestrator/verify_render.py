@@ -722,26 +722,43 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
             # everything around it, pitch normal, seam gates blind. Compare
             # each substantial beat with the beats near it in time.
             rows = []
+            raised_rows = []
+            from tts import BEAT_MIN_MS, RAISED_MIN_MS  # noqa: PLC0415
             for beat in beats:
                 clip = clips.get(beat["id"])
                 if not clip:
                     continue
                 path = OUT / "audio" / clip["file"]
-                # Same floor as the pre-render check (tts.BEAT_MIN_MS): a
-                # clip this short cannot be measured against its neighbours,
-                # only mismeasured.
-                from tts import BEAT_MIN_MS  # noqa: PLC0415
-                if not path.exists() or int(clip.get("durationMs") or 0) < BEAT_MIN_MS:
+                dur = int(clip.get("durationMs") or 0)
+                if not path.exists() or dur < RAISED_MIN_MS:
                     continue
-                words = len(clip.get("words") or [])
                 lv = _level_db(path)
                 f0 = _median_f0(path)
-                wpm = words / (clip["durationMs"] / 60000) if words else 0.0
+                raised_rows.append((beat["id"], at_ms[beat["id"]], dur, f0, lv))
+                # A higher floor for the neighbourhood test (tts.BEAT_MIN_MS):
+                # a clip that short cannot be measured against its neighbours,
+                # only mismeasured. The render-wide test above is steadier and
+                # takes the shorter clips too — the beat that put Tal-Botvinnik
+                # on YouTube was 3.9 s long and fell through this gap.
+                if dur < BEAT_MIN_MS:
+                    continue
+                words = len(clip.get("words") or [])
+                wpm = words / (dur / 60000) if words else 0.0
                 rows.append((beat["id"], at_ms[beat["id"]], f0, lv, wpm, words))
             # One arithmetic, defined once in tts.py and shared with the
             # pre-render check — two renders were built and then held in one
             # day because the two stages judged beats differently.
-            from tts import find_offvoice_beats  # noqa: PLC0415
+            from tts import find_offvoice_beats, find_raised_beats  # noqa: PLC0415
+
+            # Against the render's own centre, not the neighbourhood: a beat
+            # read several semitones high for its whole length is the defect
+            # a listener calls "the voice changed", and a raised PASSAGE lifts
+            # its own neighbourhood so the local test cannot see it at all.
+            raised = find_raised_beats(raised_rows)
+            for bid, _bat, semis, ddb in raised:
+                rep.error("voice", f"{bid} at {ts(bid)} is read {semis:+.1f} "
+                                   f"semitones and {ddb:+.1f} dB above the "
+                                   "render's own centre — a raised read")
 
             different_read, outlier_rows, cluster = find_offvoice_beats(rows)
             loud_fast = [bid for bid, _, _ in different_read]
@@ -760,7 +777,7 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                 rep.error("voice", f"{len(cluster)} off-voice beats within 30s "
                                    f"({', '.join(cluster)}) — a stretch a viewer "
                                    "will hear as a different narrator")
-            if not bad_seams and not loud_fast and not mild:
+            if not bad_seams and not loud_fast and not mild and not raised:
                 rep.info("voice", "no seam or beat stands out in pitch, level or pace")
 
             # --- where to put an ear -------------------------------------

@@ -775,6 +775,10 @@ def main() -> int:
                     print(f"[voice]   {s.get('beat')} read "
                           f"{s.get('semitones')} semitones / {s.get('dDb')} dB "
                           "above the render's centre")
+                elif kind == "squeal":
+                    print(f"[voice]   {s.get('beat')} holds a pitch break "
+                          f"{s.get('durS')}s at {s.get('ratio')}x the "
+                          "voice's centre")
                 else:
                     print(f"[voice]   seam into {s.get('take')}: "
                           f"{s.get('dHz')} Hz, {s.get('dDb')} dB")

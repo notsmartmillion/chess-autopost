@@ -1004,12 +1004,17 @@ def _rescue_stubborn_seams(
         return d
 
     def badness(j: int) -> float:
-        """Summed audit-excess of the seams take j participates in.
+        """Summed audit-excess of the seams take j participates in, plus any
+        sustained pitch break inside the take itself.
 
-        Both of them — a fresh sample that closes the left seam by opening
-        the right one has fixed nothing.
+        Both seams — a fresh sample that closes the left one by opening the
+        right one has fixed nothing. And the interior, because this function
+        is the rescue's accept test and edges are all it used to see: the
+        rescue that produced Smyslov-Larsen's 6:53 drove its seam badness to
+        a perfect 0.00 with a squeal on "Queen to A4" in the middle of the
+        very sample it accepted.
         """
-        total = 0.0
+        total = _squeal_penalty(paths[j], med_f)
         for a, b in ((j - 1, j), (j, j + 1)):
             if a < 0 or b >= len(paths):
                 continue
@@ -1132,6 +1137,160 @@ def _median_f0(path: Path, start_s: float = 0.0, dur_s: Optional[float] = None) 
         if ac[k] > 0.3 * ac[0]:
             out.append(sr / k)
     return float(np.median(out)) if out else 0.0
+
+
+# --- sustained pitch breaks (squeals) -------------------------------------
+# The model's one defect no median can see: mid-phrase the voice breaks
+# upward — 300-400 Hz against a ~194 Hz centre — for half a second to two
+# seconds, then carries on. Smyslov-Larsen shipped two ("So what was wrong
+# with the pawn push?" at 3:10, "Queen to A4" at 6:53) through an audit whose
+# every instrument is a median over something longer than the break. The
+# separating condition, calibrated on the mix audio of all 36 finished
+# renders, is RUN LENGTH at height: genuine emphasis touches 1.5x the render
+# median for a frame or two; the breaks HOLD it. At >= 0.5 s and >= 1.75x,
+# every hit in the corpus is in a render the listener rejected or that was
+# superseded, and no live render hits at all.
+SQUEAL_RATIO = 1.5        # a frame this far above the centre is suspect
+SQUEAL_MIN_S = 0.4        # a run this long is worth redrawing over
+SQUEAL_BLOCK_RATIO = 1.75  # a run this high...
+SQUEAL_BLOCK_S = 0.5       # ...and this long is the defect a viewer reports
+
+
+def _f0_track(
+    path: Path, hop_s: float = 0.1
+) -> Tuple[List[float], List[Optional[float]], float]:
+    """Per-frame (f0, level_db) at ``hop_s`` resolution. f0 is 0.0 unvoiced."""
+    import wave as _wave
+
+    import numpy as np  # type: ignore
+
+    with _wave.open(str(path), "rb") as fh:
+        sr = fh.getframerate()
+        ch = fh.getnchannels()
+        pcm = np.frombuffer(fh.readframes(fh.getnframes()), dtype=np.int16)
+    if ch > 1:
+        pcm = pcm.reshape(-1, ch).mean(axis=1)
+    pcm = pcm.astype(np.float64)
+    hop = int(hop_s * sr)
+    win = int(0.04 * sr)
+    lo, hi = int(sr / 420), int(sr / 60)
+    n = max(0, (len(pcm) - win) // hop)
+    f0s: List[float] = []
+    lvls: List[Optional[float]] = []
+    for i in range(n):
+        seg = pcm[i * hop:i * hop + hop + win]
+        rms = float(np.sqrt((seg ** 2).mean()))
+        lvls.append(20 * np.log10(rms / 32768.0) if rms > 1 else None)
+        vals = []
+        for j in range(0, len(seg) - win, int(0.01 * sr)):
+            fr = seg[j:j + win]
+            if np.sqrt((fr ** 2).mean()) < 260:
+                continue
+            fr = fr - fr.mean()
+            ac = np.correlate(fr, fr, "full")[win - 1:]
+            if hi >= len(ac) or ac[0] <= 0:
+                continue
+            k = int(np.argmax(ac[lo:hi]) + lo)
+            if ac[k] > 0.4 * ac[0]:
+                vals.append(sr / k)
+        f0s.append(float(np.median(vals)) if len(vals) >= 2 else 0.0)
+    return f0s, lvls, hop_s
+
+
+def _speech_floor(lvls: Sequence[Optional[float]]) -> Optional[float]:
+    """12 dB under the clip's own median speech level — quieter frames are
+    breath and tails, but a QUIET squeal still counts: the shipped ones sat
+    well below the surrounding speech and were audible regardless."""
+    spoken = sorted(l for l in lvls if l is not None)
+    return spoken[len(spoken) // 2] - 12.0 if spoken else None
+
+
+def find_squeals(
+    path: Path, med_f0: float = 0.0
+) -> List[Tuple[float, float, float]]:
+    """Sustained upward pitch breaks in a clip: (start_s, dur_s, peak_ratio).
+
+    ``med_f0`` is the voice's centre — pass the render-wide median where one
+    is known; a lone clip falls back to its own. Only HOLDS are reported —
+    contiguous frames all >= SQUEAL_RATIO x centre — because that is the
+    shape the blocking calibration was run on. The fast whoop (a 200 ms
+    up-down glide) is measurably identical to the stressed syllables every
+    accepted render is full of, so it must never block; it is scored in
+    _squeal_penalty, where a false positive merely biases a redraw.
+    """
+    f0s, lvls, hop = _f0_track(path, 0.1)
+    voiced = sorted(f for f in f0s if f)
+    if len(voiced) < 8:
+        return []
+    med = med_f0 or voiced[len(voiced) // 2]
+    floor = _speech_floor(lvls)
+    if not med or floor is None:
+        return []
+    out: List[Tuple[float, float, float]] = []
+    i, n = 0, len(f0s)
+    while i < n:
+        if f0s[i] >= SQUEAL_RATIO * med and (lvls[i] or -120) >= floor:
+            j = i
+            while j < n and f0s[j] >= SQUEAL_RATIO * med and (lvls[j] or -120) >= floor:
+                j += 1
+            if (j - i) * hop >= SQUEAL_MIN_S:
+                peak = max(f0s[i:j])
+                out.append((i * hop, (j - i) * hop, peak / med))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _whoop_runs(
+    path: Path, med_f0: float, seed: float = 1.7, ext: float = 1.35,
+    min_s: float = 0.25,
+) -> List[Tuple[float, float, float]]:
+    """Fast pitch excursions: seeded at ``seed`` x centre, extended while
+    frames stay above ``ext`` x. Catches the 200-400 ms up-down glide that
+    the hold detector cannot (Smyslov's "Queen to A4" spent only 0.2 s above
+    1.5x on its way to 353 Hz). NOT a gate — live renders carry several of
+    these per video — only a comparative score for choosing between draws."""
+    f0s, lvls, hop = _f0_track(path, 0.05)
+    voiced = sorted(f for f in f0s if f)
+    if len(voiced) < 8 or not med_f0:
+        return []
+    floor = _speech_floor(lvls)
+    if floor is None:
+        return []
+    n = len(f0s)
+    out: List[Tuple[float, float, float]] = []
+    used: set = set()
+    for i in range(n):
+        if (i in used or not f0s[i] or f0s[i] < seed * med_f0
+                or (lvls[i] or -120) < floor):
+            continue
+        a = i
+        while a > 0 and f0s[a - 1] >= ext * med_f0 and (lvls[a - 1] or -120) >= floor:
+            a -= 1
+        b = i
+        while b < n - 1 and f0s[b + 1] >= ext * med_f0 and (lvls[b + 1] or -120) >= floor:
+            b += 1
+        used.update(range(a, b + 1))
+        if (b - a + 1) * hop >= min_s:
+            out.append((a * hop, (b - a + 1) * hop, max(f0s[a:b + 1]) / med_f0))
+    return out
+
+
+def _squeal_penalty(path: Path, med_f0: float = 0.0) -> float:
+    """Pitch-break score in re-roll units: dist() deltas are ~0.1-0.5, so a
+    blocking-tier hold must dominate any register nicety — a take that reads
+    two semitones from centre but cleanly beats one that squeals. Whoops
+    count lightly: individually they are indistinguishable from emphasis,
+    but between two draws of the same text, fewer of them is the better draw.
+    """
+    pen = 0.0
+    for _at, dur, ratio in find_squeals(path, med_f0):
+        blocking = dur >= SQUEAL_BLOCK_S and ratio >= SQUEAL_BLOCK_RATIO
+        pen += 1.0 if blocking else 0.3
+    if med_f0:
+        pen += 0.2 * len(_whoop_runs(path, med_f0))
+    return pen
 
 
 def _pitch_glide(
@@ -1934,12 +2093,16 @@ def _ttsapi_synthesize(
                     return pen
 
                 # Timbre is what reads as "a different person" — pitch register
-                # is allowed to breathe with the pace of the passage.
+                # is allowed to breathe with the pace of the passage. A
+                # sustained pitch break is a third trigger of its own: whole-
+                # take numbers for the Smyslov take that squealed on "Queen to
+                # A4" were innocuous, because a two-second break averages out
+                # of anything.
                 candidates = []
                 for i, (p, f, c) in enumerate(measured):
                     whole = (f and abs(target / f - 1.0) > 0.10) or (
                         c and ctarget and abs(ctarget / c - 1.0) > 0.12)
-                    pen = seam_pen(i, p)
+                    pen = seam_pen(i, p) + _squeal_penalty(p, target)
                     if whole or pen > 0.15:
                         candidates.append((i, f, c, pen))
                 # Worst first. The budget is four rolls, and taking the first
@@ -1970,7 +2133,8 @@ def _ttsapi_synthesize(
                     new_f0 = _median_f0(fresh)
                     new_cen = _centroid(fresh)
                     old_score = dist(f0, cen) + pen
-                    new_score = dist(new_f0, new_cen) + seam_pen(i, fresh)
+                    new_score = (dist(new_f0, new_cen) + seam_pen(i, fresh)
+                                 + _squeal_penalty(fresh, target))
                     if new_f0 and new_score < old_score:
                         fresh.replace(para_path)
                         print(f"[tts] re-rolled {para_path.stem}: "
@@ -2071,12 +2235,37 @@ def _check_offvoice_beats(
     try:
         different_read, _outliers, cluster = find_offvoice_beats(rows)
         raised = find_raised_beats(raised_rows)
+        # Sustained pitch breaks, judged against the render's own centre.
+        # Every clip is scanned, not just the substantial ones — the breaks
+        # live inside beats of every length.
+        f0s = sorted(r[3] for r in raised_rows if r[3])
+        centre = f0s[len(f0s) // 2] if len(f0s) >= 8 else 0.0
+        squeals = []
+        if centre:
+            at2 = 0
+            for item in lines:
+                clip = clips.get(item["id"])
+                if not clip:
+                    continue
+                path = out_dir / (clip.get("file") or "")
+                if path.exists():
+                    for off, dur, ratio in find_squeals(path, centre):
+                        if dur >= SQUEAL_BLOCK_S and ratio >= SQUEAL_BLOCK_RATIO:
+                            squeals.append((item["id"], at2 + int(off * 1000),
+                                            dur, ratio))
+                at2 += int(clip.get("durationMs") or 0)
     except Exception as exc:  # noqa: BLE001
         # Measurement, not synthesis: never let the check cost the run.
         print(f"[tts] off-voice check skipped ({exc})")
         return
 
     defects: List[Dict[str, Any]] = []
+    for bid, bat, dur, ratio in squeals:
+        defects.append({"type": "squeal", "beat": bid,
+                        "durS": round(dur, 1), "ratio": round(ratio, 2)})
+        print(f"[tts] beat {bid} at {bat // 60000}:{bat % 60000 // 1000:02d} "
+              f"holds a pitch break {dur:.1f}s at {ratio:.2f}x the voice's "
+              "centre — the audit will fail it")
     for bid, bat, semis, ddb in raised:
         defects.append({"type": "raised-beat", "beat": bid,
                         "semitones": round(semis, 2), "dDb": round(ddb, 1)})

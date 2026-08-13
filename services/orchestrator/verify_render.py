@@ -748,7 +748,10 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
             # One arithmetic, defined once in tts.py and shared with the
             # pre-render check — two renders were built and then held in one
             # day because the two stages judged beats differently.
-            from tts import find_offvoice_beats, find_raised_beats  # noqa: PLC0415
+            from tts import (  # noqa: PLC0415
+                SQUEAL_BLOCK_RATIO, SQUEAL_BLOCK_S, find_offvoice_beats,
+                find_raised_beats, find_squeals,
+            )
 
             # Against the render's own centre, not the neighbourhood: a beat
             # read several semitones high for its whole length is the defect
@@ -759,6 +762,37 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                 rep.error("voice", f"{bid} at {ts(bid)} is read {semis:+.1f} "
                                    f"semitones and {ddb:+.1f} dB above the "
                                    "render's own centre — a raised read")
+
+            # Sustained pitch breaks. Every clip, judged against the render's
+            # centre; the run-length-at-height bar is calibrated so corpus
+            # emphasis stays under it (see tts.SQUEAL_* for the numbers).
+            # Smyslov-Larsen shipped a 1.8 s break at 3:10 while this scan's
+            # advisory ancestor listed the timestamp as merely "worth a
+            # human ear".
+            squeals = []
+            f0_all = sorted(r[3] for r in raised_rows if r[3])
+            centre = f0_all[len(f0_all) // 2] if len(f0_all) >= 8 else 0.0
+            if centre:
+                for beat in beats:
+                    clip = clips.get(beat["id"])
+                    if not clip:
+                        continue
+                    path = OUT / "audio" / clip["file"]
+                    if not path.exists():
+                        continue
+                    for off, sdur, ratio in find_squeals(path, centre):
+                        t_ms = at_ms[beat["id"]] + int(off * 1000)
+                        where = f"{t_ms // 60000}:{t_ms % 60000 // 1000:02d}"
+                        if sdur >= SQUEAL_BLOCK_S and ratio >= SQUEAL_BLOCK_RATIO:
+                            squeals.append(beat["id"])
+                            rep.error("voice", f"{beat['id']} at {where} holds "
+                                               f"a pitch break for {sdur:.1f}s "
+                                               f"at {ratio:.2f}x the voice's "
+                                               "centre — a squeal")
+                        else:
+                            rep.warn("voice", f"{beat['id']} at {where} rises "
+                                              f"to {ratio:.2f}x the centre for "
+                                              f"{sdur:.1f}s — worth an ear")
 
             different_read, outlier_rows, cluster = find_offvoice_beats(rows)
             loud_fast = [bid for bid, _, _ in different_read]
@@ -777,7 +811,8 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                 rep.error("voice", f"{len(cluster)} off-voice beats within 30s "
                                    f"({', '.join(cluster)}) — a stretch a viewer "
                                    "will hear as a different narrator")
-            if not bad_seams and not loud_fast and not mild and not raised:
+            if (not bad_seams and not loud_fast and not mild and not raised
+                    and not squeals):
                 rep.info("voice", "no seam or beat stands out in pitch, level or pace")
 
             # --- where to put an ear -------------------------------------

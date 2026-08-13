@@ -1,5 +1,14 @@
 import React, {useMemo} from 'react';
-import {AbsoluteFill, Img, interpolate, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
+import {
+  AbsoluteFill,
+  Audio,
+  Img,
+  Sequence,
+  interpolate,
+  staticFile,
+  useCurrentFrame,
+  useVideoConfig,
+} from 'remotion';
 import {AnimatedBoard} from '../components/AnimatedBoard';
 import {THEME} from '../components/AnalysisRail';
 
@@ -22,6 +31,7 @@ export type SlowPly = {
   prevFen: string;
   fen: string;
   checkSquare?: string | null;
+  isCapture?: boolean;
   /** Black pieces White has taken so far, as piece letters ('P','N',...). */
   capturedByWhite: string[];
   /** White pieces Black has taken so far. */
@@ -69,16 +79,29 @@ const CapturedRow: React.FC<{pieces: string[]; ofColor: 'w' | 'b'; lead: number}
   ofColor,
   lead,
 }) => (
-  <div style={{display: 'flex', alignItems: 'center', gap: 2, minHeight: 34}}>
+  // The tray sits on its own lighter chip: black sprites vanished straight
+  // into the page background, and a backing only where the pieces are beats
+  // lightening the whole frame.
+  <div
+    style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: 2,
+      minHeight: 44,
+      padding: pieces.length ? '3px 12px' : 0,
+      borderRadius: 10,
+      background: pieces.length ? 'rgba(230, 235, 242, 0.16)' : 'transparent',
+    }}
+  >
     {sortCaptures(pieces).map((p, i) => (
       <Img
         key={`${p}-${i}`}
         src={staticFile(`pieces/merida/${ofColor}${p.toLowerCase()}.svg`)}
-        style={{width: 34, height: 34, marginLeft: i > 0 ? -12 : 0}}
+        style={{width: 36, height: 36, marginLeft: i > 0 ? -12 : 0}}
       />
     ))}
     {lead > 0 && (
-      <span style={{color: THEME.muted, fontSize: 26, fontWeight: 600, marginLeft: 6}}>
+      <span style={{color: THEME.text, fontSize: 26, fontWeight: 600, marginLeft: 6}}>
         +{lead}
       </span>
     )}
@@ -155,7 +178,9 @@ export const ChessSlowPlay: React.FC<ChessSlowPlayProps> = ({
   return (
     <AbsoluteFill
       style={{
-        background: THEME.bg0,
+        // Lighter than the narrated build's bg0 on purpose: black captured
+        // sprites were unreadable against #0b0e13.
+        background: '#1d2430',
         fontFamily: 'Inter, "Segoe UI", system-ui, sans-serif',
       }}
     >
@@ -181,6 +206,20 @@ export const ChessSlowPlay: React.FC<ChessSlowPlayProps> = ({
       <div style={{position: 'absolute', top: BOARD_Y + BOARD + 26, left: 0, right: 0}}>
         {nameRow(game?.white ?? 'White', game?.whiteElo, captures.capturedByWhite, 'b', whiteLead)}
       </div>
+
+      {/* The move sounds: a knock when a piece lands, the heavier two-contact
+          knock when it lands on another. Timed to moveStartFrame, the same
+          instant the animation begins. */}
+      {plies.map((p, i) => (
+        <Sequence
+          key={`sfx-${i}`}
+          from={introFrames + i * moveFrames}
+          durationInFrames={Math.min(moveFrames, Math.round(0.4 * fps))}
+          layout="none"
+        >
+          <Audio src={staticFile(p.isCapture ? 'sfx/capture.wav' : 'sfx/move.wav')} />
+        </Sequence>
+      ))}
 
       {/* The game's end: the result, quietly, over the final position. */}
       {showResult && (

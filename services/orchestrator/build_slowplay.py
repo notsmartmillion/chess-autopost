@@ -94,6 +94,7 @@ def game_props(pgn_path: Path) -> Dict[str, Any]:
             "prevFen": prev_fen,
             "fen": board.fen(),
             "checkSquare": check_sq,
+            "isCapture": captured is not None,
             "capturedByWhite": list(by_white),
             "capturedByBlack": list(by_black),
             "matDiff": diff,

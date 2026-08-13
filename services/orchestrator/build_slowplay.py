@@ -141,7 +141,7 @@ def main() -> int:
     ap.add_argument("--pgn", required=True, help="PGN of the game")
     ap.add_argument("--out", default=None,
                     help="Output mp4 (default outputs/slowplay/<pgn-stem>/)")
-    ap.add_argument("--seconds-per-move", type=float, default=3.0)
+    ap.add_argument("--seconds-per-move", type=float, default=4.0)
     args = ap.parse_args()
 
     pgn_path = Path(args.pgn)

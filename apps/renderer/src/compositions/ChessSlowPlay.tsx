@@ -59,7 +59,7 @@ export type ChessSlowPlayProps = {
   [key: string]: unknown;
 };
 
-export const SLOWPLAY_DEFAULTS = {secondsPerMove: 3, introSeconds: 3, outroSeconds: 6};
+export const SLOWPLAY_DEFAULTS = {secondsPerMove: 4, introSeconds: 3, outroSeconds: 6};
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 

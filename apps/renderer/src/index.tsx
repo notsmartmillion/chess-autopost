@@ -3,6 +3,12 @@ import {Composition, registerRoot, staticFile, CalculateMetadataFunction} from '
 import {ChessNarration, ChessNarrationProps} from './compositions/ChessNarration';
 import {Thumbnail, ThumbnailProps} from './compositions/Thumbnail';
 import {ChessShort, ChessShortProps} from './compositions/ChessShort';
+import {
+  ChessSlowPlay,
+  ChessSlowPlayProps,
+  SLOWPLAY_DEFAULTS,
+  SlowPlayGame,
+} from './compositions/ChessSlowPlay';
 import {ChannelWatermark, ChannelBanner} from './compositions/ChannelArt';
 import type {Script} from './types/script';
 
@@ -65,6 +71,23 @@ const shortMetadata: CalculateMetadataFunction<ChessShortProps> = async ({props}
   };
 };
 
+/**
+ * Slow-play length is pure arithmetic — intro hold, N moves on a fixed
+ * clock, an outro hold on the result. The game always arrives via --props;
+ * like the Short, this build must never own public/script.json.
+ */
+const slowPlayMetadata: CalculateMetadataFunction<ChessSlowPlayProps> = async ({props}) => {
+  const game = (props.game as SlowPlayGame | null) ?? null;
+  const spm = (props.secondsPerMove as number) || SLOWPLAY_DEFAULTS.secondsPerMove;
+  const intro = (props.introSeconds as number) ?? SLOWPLAY_DEFAULTS.introSeconds;
+  const outro = (props.outroSeconds as number) ?? SLOWPLAY_DEFAULTS.outroSeconds;
+  const total = intro + (game?.plies?.length ?? 0) * spm + outro;
+  return {
+    durationInFrames: Math.max(1, Math.round(total * FPS)),
+    props: {...props, game},
+  };
+};
+
 registerRoot(() => {
   return (
     <>
@@ -103,6 +126,16 @@ registerRoot(() => {
         height={1920}
         calculateMetadata={shortMetadata}
         defaultProps={{audioBase: '/audio_short'}}
+      />
+      <Composition
+        id="ChessSlowPlay"
+        component={ChessSlowPlay}
+        durationInFrames={10 * FPS}
+        fps={FPS}
+        width={1920}
+        height={1080}
+        calculateMetadata={slowPlayMetadata}
+        defaultProps={{}}
       />
       <Composition
         id="Thumbnail"

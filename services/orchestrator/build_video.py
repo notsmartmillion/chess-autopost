@@ -545,6 +545,25 @@ def render(renderer_dir: Path, total_ms: int, script: Dict[str, Any]) -> None:
             print(f"[warn] script copy not written ({exc})")
 
 
+def _render_slowplay(pgn: Path) -> None:
+    """The slow channel's cut of the same game, after the narrated render.
+
+    Sequential on purpose: two Remotion renders fighting for CPU would slow
+    both, and build_slowplay's isolation contract (own output tree, props
+    over public/) only holds against the narrated build when they do not
+    overlap. Best-effort — the slow channel must never cost the main one
+    its video.
+    """
+    try:
+        subprocess.check_call(
+            [sys.executable, str(Path(__file__).parent / "build_slowplay.py"),
+             "--pgn", str(pgn)]
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] slow-play render failed ({exc}); the narrated video "
+              "is unaffected")
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Build a narrated chess video")
     ap.add_argument("--pgn", required=True, help="Path to the PGN to narrate")
@@ -571,6 +590,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--allow-template-narration", action="store_true",
                     help="Render even if the narration model failed and the "
                          "words came from the built-in templates")
+    ap.add_argument("--no-slowplay", action="store_true",
+                    help="Skip the slow-play channel's cut of this game")
     return ap.parse_args()
 
 
@@ -804,6 +825,10 @@ def main() -> int:
         return 0
 
     render(ROOT / "apps" / "renderer", total_ms, script)
+
+    # --- 5) the slow channel's cut of the same game ---------------------
+    if not args.no_slowplay:
+        _render_slowplay(Path(args.pgn))
     return 0
 
 

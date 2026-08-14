@@ -1324,43 +1324,7 @@ class Director:
 
     def _spoken_san(self, san: str, board: Optional[chess.Board] = None) -> str:
         """Turn SAN into words a narrator would actually say."""
-        if not san:
-            return san
-        if san.startswith("O-O-O") or san.startswith("0-0-0"):
-            return "castles queenside"
-        if san.startswith("O-O") or san.startswith("0-0"):
-            return "castles kingside"
-
-        core = san.replace("!", "").replace("?", "")
-        is_mate = core.endswith("#")
-        is_check = core.endswith("+")
-        core = core.rstrip("#+")
-
-        promo = None
-        if "=" in core:
-            core, _, promo_ch = core.partition("=")
-            promo = {"Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}.get(promo_ch[:1])
-
-        letters = {"K": "king", "Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}
-        piece = letters.get(core[0]) if core and core[0] in letters else "pawn"
-        body = core[1:] if piece != "pawn" else core
-
-        captures = "x" in body
-        dest = body.split("x")[-1] if captures else body
-        dest = dest[-2:] if len(dest) >= 2 else dest
-
-        if captures:
-            phrase = f"{piece} takes {dest}"
-        else:
-            phrase = f"{piece} to {dest}" if piece != "pawn" else dest
-
-        if promo:
-            phrase += f", promoting to a {promo}"
-        if is_mate:
-            phrase += ", checkmate"
-        elif is_check:
-            phrase += ", check"
-        return phrase
+        return spoken_san(san)
 
     def _describe_move(
         self,
@@ -1819,6 +1783,64 @@ Return JSON: {"title": "...", "hook": "...", "thumb": "...", "beats": [{"id": "<
 covering every beat id given."""
 
 
+def spoken_san(san: str) -> str:
+    """Turn SAN into words a narrator would actually say."""
+    if not san:
+        return san
+    if san.startswith("O-O-O") or san.startswith("0-0-0"):
+        return "castles queenside"
+    if san.startswith("O-O") or san.startswith("0-0"):
+        return "castles kingside"
+
+    core = san.replace("!", "").replace("?", "")
+    is_mate = core.endswith("#")
+    is_check = core.endswith("+")
+    core = core.rstrip("#+")
+
+    promo = None
+    if "=" in core:
+        core, _, promo_ch = core.partition("=")
+        promo = {"Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}.get(promo_ch[:1])
+
+    letters = {"K": "king", "Q": "queen", "R": "rook", "B": "bishop", "N": "knight"}
+    piece = letters.get(core[0]) if core and core[0] in letters else "pawn"
+    body = core[1:] if piece != "pawn" else core
+
+    captures = "x" in body
+    dest = body.split("x")[-1] if captures else body
+    dest = dest[-2:] if len(dest) >= 2 else dest
+
+    if captures:
+        phrase = f"{piece} takes {dest}"
+    else:
+        phrase = f"{piece} to {dest}" if piece != "pawn" else dest
+
+    if promo:
+        phrase += f", promoting to a {promo}"
+    if is_mate:
+        phrase += ", checkmate"
+    elif is_check:
+        phrase += ", check"
+    return phrase
+
+
+# The same shapes the audit's SPOKEN_BANS flags as "raw SAN": the prompt bans
+# them, but a model under a word budget still writes "after Qe5" now and then,
+# and the ban only fires AFTER the voice has read it aloud and the render has
+# spent its minutes. Prose pawn squares ("e4 arrives") are deliberately not
+# matched — that is how commentators actually speak.
+_SAN_IN_PROSE = re.compile(
+    # The tail is a lookahead, not \b: after "Nxf7+" a word boundary never
+    # follows the '+', so \b silently left the marker behind ("f7+ wins").
+    r"\b(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8][+#]?|O-O(?:-O)?)(?!\w)"
+)
+
+
+def despan_prose(text: str) -> str:
+    """Rewrite any raw SAN the model slipped into prose as spoken words."""
+    return _SAN_IN_PROSE.sub(lambda m: spoken_san(m.group(0)), text)
+
+
 def _compact_beat_for_llm(beat: Dict[str, Any], ply_facts: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "id": beat["id"],
@@ -2093,11 +2115,16 @@ def narrate_with_llm(
         script["meta"]["llmThumb"] = thumb
 
     rewritten: Dict[str, str] = {}
+    despanned = 0
     for item in obj.get("beats", obj if isinstance(obj, list) else []):
         bid = (item.get("id") or "").strip()
         text = (item.get("text") or "").strip()
         if bid and text:
-            rewritten[bid] = text
+            fixed = despan_prose(text)
+            despanned += fixed != text
+            rewritten[bid] = fixed
+    if despanned:
+        logger.info(f"rewrote raw SAN to spoken words in {despanned} beat(s)")
 
     if not rewritten:
         return False

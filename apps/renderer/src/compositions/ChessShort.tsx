@@ -254,22 +254,30 @@ export const ChessShort: React.FC<ChessShortProps> = ({
           <span style={{color: THEME.muted, fontSize: 28}}>vs</span>
           <span>{black}</span>
         </div>
-        {beat?.move && revealed && (
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'center',
-              alignItems: 'center',
-              gap: 14,
-              fontSize: 44,
-              fontWeight: 800,
-              color: badge?.color ?? THEME.text,
-            }}
-          >
-            <span>{beat.move.san}</span>
-            {badge && <span>{badge.symbol}</span>}
-          </div>
-        )}
+        {/* The move row's SPACE is permanent; only its content waits for the
+            reveal. YouTube samples an arbitrary frame as the Shorts feed
+            thumbnail, and when this row popped in and out of the layout,
+            every Short's card came out looking different — the channel grid
+            read as five different designs. */}
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'center',
+            alignItems: 'center',
+            gap: 14,
+            height: 54,
+            fontSize: 44,
+            fontWeight: 800,
+            color: badge?.color ?? THEME.text,
+          }}
+        >
+          {beat?.move && revealed && (
+            <>
+              <span>{beat.move.san}</span>
+              {badge && <span>{badge.symbol}</span>}
+            </>
+          )}
+        </div>
       </div>
 
       {/* Channel mark: the banner's own wordmark rather than the channel name

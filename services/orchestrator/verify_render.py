@@ -698,9 +698,12 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                 dp = (p_head - p_tail) if p_tail and p_head else 0.0
                 dl = (l_head - l_tail) if l_tail is not None and l_head is not None else 0.0
                 seam_rows.append((take_first[i], dp, dl))
-                # One dimension far out, or two moderately out together — the
-                # combination is what the ear sums into "someone else".
-                if abs(dp) > 60 or abs(dl) > 5 or (abs(dp) > 40 and abs(dl) > 3):
+                # One rule, defined once in tts.py beside the pass that must
+                # fix what this audit catches — including the fourth arm a
+                # listener taught it (a strong level step needs less pitch
+                # company to be heard).
+                from tts import seam_step_is_audible  # noqa: PLC0415
+                if seam_step_is_audible(dp, dl):
                     bad_seams.append(f"{ts(take_first[i])} ({dp:+.0f} Hz, {dl:+.1f} dB)")
             if seam_rows:
                 worst_p = max(seam_rows, key=lambda r: abs(r[1]))
@@ -859,6 +862,103 @@ def check_audio(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -
                 p.unlink(missing_ok=True)
     except Exception as exc:  # noqa: BLE001
         rep.warn("voice", f"consistency scan did not complete ({exc})")
+
+    check_voice_identity(script, manifest, rep)
+
+
+# Timbre gate. Every measurement above is pitch, level, or tempo — a robotic
+# stretch keeps all three normal and ships. Speaker-embedding similarity against
+# the channel's reference clip is the instrument that hears it: degrading real
+# beats of this voice drops cosine similarity from 0.72-0.92 (clean, 103-beat
+# render) to 0.58-0.64 (robotic) and 0.58-0.74 (pitch-shifted) — measured
+# 2026-08 on identical spoken content. Floors sit in the gap. Known blind spot:
+# bit-crush barely moves the score; the level checks above carry that case.
+SIM_BEAT_FLOOR = 0.68          # any beat below: a listener hears a machine
+SIM_RELATIVE_DIP = 0.12        # vs the render's own median
+SIM_MIN_VOICED_S = 1.5         # embeddings on less voiced audio are noise
+
+
+def check_voice_identity(script: Dict[str, Any], manifest: Dict[str, Any],
+                         rep: Report) -> None:
+    if manifest.get("backend") not in ("ttsapi", "qwen"):
+        return                                     # no local profile to compare
+    beats = script.get("beats") or []
+    clips = manifest.get("clips") or {}
+    voice = os.getenv("TTS_VOICE", "chess_host").strip() or "chess_host"
+
+    order, paths = [], []
+    for beat in beats:
+        clip = clips.get(beat["id"])
+        if not clip:
+            continue
+        p = OUT / "audio" / clip["file"]
+        if p.exists():
+            order.append(beat["id"])
+            paths.append(str(p))
+    if len(paths) < 8:
+        return
+
+    import urllib.request
+    base = os.getenv("TTS_API_URL", "http://127.0.0.1:8010").rstrip("/")
+    try:
+        body = json.dumps({"voice": voice, "paths": paths}).encode()
+        req = urllib.request.Request(
+            f"{base}/similarity", data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=600) as r:
+            results = json.loads(r.read().decode())["results"]
+    except Exception as exc:  # noqa: BLE001
+        # The whole point of this audit is to certify the voice before an
+        # unattended upload; an unverifiable render must not auto-ship.
+        rep.error("voice", f"identity check impossible — TTS service "
+                           f"unreachable at {base} ({exc})")
+        return
+
+    sims: Dict[str, float] = {}
+    for bid, res in zip(order, results):
+        if "similarity" in res and res.get("voiced_s", 0) >= SIM_MIN_VOICED_S:
+            sims[bid] = res["similarity"]
+    if len(sims) < 8:
+        rep.warn("voice", f"identity: only {len(sims)} beats had enough "
+                          "voiced audio to score")
+        return
+
+    values = sorted(sims.values())
+    median = values[len(values) // 2]
+    rep.info("voice", f"identity vs {voice}: median {median:.3f}, "
+                      f"range {values[0]:.3f}-{values[-1]:.3f} "
+                      f"over {len(sims)} beats")
+
+    floor_fails = [(b, s) for b, s in sims.items() if s < SIM_BEAT_FLOOR]
+    for bid, s in sorted(floor_fails, key=lambda t: t[1])[:5]:
+        rep.error("voice", f"{bid} does not sound like {voice}: "
+                           f"similarity {s:.3f} < {SIM_BEAT_FLOOR}")
+    if len(floor_fails) > 5:
+        rep.error("voice", f"...and {len(floor_fails) - 5} more beats "
+                           f"under the identity floor")
+
+    # A dipped RUN is a passage in a different voice even when no single beat
+    # breaks the floor; one dipped beat alone is worth an ear, not a block.
+    dipped = [bid for bid in order
+              if bid in sims and median - sims[bid] > SIM_RELATIVE_DIP]
+    runs, cur = [], []
+    for bid in order:
+        if bid in dipped:
+            cur.append(bid)
+        else:
+            if len(cur) >= 2:
+                runs.append(list(cur))
+            cur = []
+    if len(cur) >= 2:
+        runs.append(cur)
+    for run in runs:
+        rep.error("voice", f"off-voice passage: {run[0]}..{run[-1]} "
+                           f"({len(run)} consecutive beats "
+                           f">{SIM_RELATIVE_DIP} under render median)")
+    for bid in dipped:
+        if not any(bid in run for run in runs):
+            rep.warn("voice", f"{bid} dips {median - sims[bid]:.2f} under "
+                              f"the render's median voice — worth an ear")
 
 
 def check_cues(script: Dict[str, Any], manifest: Dict[str, Any], rep: Report) -> None:

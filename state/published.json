@@ -612,5 +612,56 @@
     "videoId": "5A8MFMIFbJ0",
     "url": "https://www.youtube.com/watch?v=5A8MFMIFbJ0",
     "privacy": "unlisted"
+  },
+  {
+    "date": "2026-08-16",
+    "pgn": "2026-08-16_Vidit_vs_Mamedyarov.pgn",
+    "archive": "Vidit-v-Mamedyarov-2022.mp4",
+    "sizeMb": 52.1,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "He Left His Knight There and White Resigned",
+    "status": "not_uploaded"
+  },
+  {
+    "date": "2026-08-17",
+    "pgn": "2026-08-16_Gelfand_vs_Anand.pgn",
+    "archive": "Gelfand-v-Anand-2014.mp4",
+    "sizeMb": 37.8,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Viswanathan Anand Wedged a Pawn Next to the King and Never Touched It Again",
+    "status": "not_uploaded"
+  },
+  {
+    "date": "2026-08-18",
+    "pgn": "2026-08-18_Shirov_vs_Anand.pgn",
+    "archive": "Shirov-v-Anand-2016.mp4",
+    "sizeMb": 36.6,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Alexei Shirov Sacrificed Twice \u2014 Viswanathan Anand Handed It All Back",
+    "status": "held_audit",
+    "auditErrors": [
+      "[voice] seam at 6:46 (+49 Hz, +4.0 dB) will be heard as a new announcer",
+      "[voice] off-voice passage: b0028..b0029 (2 consecutive beats >0.12 under render median)"
+    ]
+  },
+  {
+    "date": "2026-08-18",
+    "pgn": "2026-08-18_Shirov_vs_Anand.pgn",
+    "archive": "Shirov-v-Anand-2016-2.mp4",
+    "sizeMb": 34.7,
+    "voice": "ttsapi",
+    "voiceProfile": "asmr_02",
+    "narration": "llm",
+    "title": "Two Pieces Offered on the Same Square \u2014 and Viswanathan Anand Won Anyway",
+    "status": "uploaded",
+    "videoId": "yy9-PnSqjJ0",
+    "url": "https://www.youtube.com/watch?v=yy9-PnSqjJ0",
+    "privacy": "unlisted"
   }
 ]

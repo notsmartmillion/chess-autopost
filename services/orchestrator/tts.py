@@ -70,6 +70,37 @@ WARMUP_PRIMER = "Settle in, and let us take our time with this one."
 FAST_OVER_MEDIAN = 1.06
 MAX_TEMPO_STRETCH = 0.08
 
+# Speaker-similarity floor for a take, against the chess_host reference clip.
+# Calibrated 2026-08 on a 103-beat ttsapi render (clean minimum 0.72 per beat;
+# whole takes run longer and score higher) and 18 synthetically degraded
+# variants (robotic max 0.64). The similarity service is the TTS server's
+# /similarity route; when it is unreachable the gate stands down silently —
+# the audit will still hold the render, and a daily run must not die here.
+SIM_TAKE_FLOOR = 0.70
+
+
+def _speaker_similarity(paths: Sequence[Path]) -> Dict[str, float]:
+    """Cosine similarity of each wav to the active voice profile, via the
+    local TTS service. Empty dict when the service or profile is unavailable
+    (non-ttsapi backends have no profile to compare against)."""
+    voice = os.getenv("TTS_VOICE", "").strip()
+    if not voice:
+        return {}
+    import urllib.request
+    base = os.getenv("TTS_API_URL", "http://127.0.0.1:8010").rstrip("/")
+    try:
+        body = json.dumps({"voice": voice,
+                           "paths": [str(p) for p in paths]}).encode()
+        req = urllib.request.Request(
+            f"{base}/similarity", data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=300) as r:
+            data = json.loads(r.read().decode())
+        return {r["path"]: r["similarity"]
+                for r in data.get("results", []) if "similarity" in r}
+    except Exception:  # noqa: BLE001
+        return {}
+
 
 # --------------------------------------------------------------------------
 # helpers
@@ -941,6 +972,21 @@ def _fetch_primed(fetch, text: str, primer: str, dest: Path, label: str) -> None
     _trim_lead_silence(dest)
 
 
+def seam_step_is_audible(dp: float, dl: float) -> bool:
+    """ONE definition of "this seam will be heard as a new announcer".
+
+    Three original arms — one dimension far out, or two moderately out
+    together — plus a fourth from a listener: Gelfand-Anand's 3:17 seam
+    (+24 Hz, +4.1 dB) was heard as a "weird pitch or tone hiccup" while
+    sitting under all three. A strong level step needs less pitch company
+    to be heard. Shared by the synthesis pass that must fix seams and the
+    audit that must catch them; a guard test fails if the audit re-states
+    these numbers instead of importing this.
+    """
+    return (abs(dp) > 60 or abs(dl) > 5 or (abs(dp) > 40 and abs(dl) > 3)
+            or (abs(dp) > 20 and abs(dl) > 3.5))
+
+
 def _audible_seam(prev: Path, cur: Path) -> Optional[Tuple[float, float]]:
     """Measure one seam exactly the way the render audit will.
 
@@ -960,7 +1006,7 @@ def _audible_seam(prev: Path, cur: Path) -> Optional[Tuple[float, float]]:
     l_tail, l_head = _level_db(prev, -1.5), _level_db(cur, 0.0, 1.5)
     dp = (p_head - p_tail) if p_tail and p_head else 0.0
     dl = (l_head - l_tail) if l_tail is not None and l_head is not None else 0.0
-    if abs(dp) > 60 or abs(dl) > 5 or (abs(dp) > 40 and abs(dl) > 3):
+    if seam_step_is_audible(dp, dl):
         return dp, dl
     return None
 
@@ -2105,6 +2151,32 @@ def _ttsapi_synthesize(
                     pen = seam_pen(i, p) + _squeal_penalty(p, target)
                     if whole or pen > 0.15:
                         candidates.append((i, f, c, pen))
+
+                # Fourth trigger: does the take still sound like the narrator?
+                # Robotic or off-voice stretches keep normal median pitch and
+                # level, so every trigger above is blind to them. Speaker
+                # embeddings are not: degrading real takes of this voice drops
+                # cosine similarity from 0.77-0.92 clean to 0.58-0.64 robotic
+                # and 0.58-0.74 pitch-shifted (measured 2026-08, 103-beat
+                # render + 18 degraded variants). Floor 0.70 sits under every
+                # clean take of that render and above every robotic variant.
+                # Deficit x3 lands in the same units dist() speaks (~0.1-0.5).
+                sims = _speaker_similarity([p for _, p, _ in takes])
+                if sims:
+                    have = {i for i, *_ in candidates}
+                    for i, (p, f, c) in enumerate(measured):
+                        sim = sims.get(str(takes[i][1]))
+                        if sim is None or sim >= SIM_TAKE_FLOOR:
+                            continue
+                        pen = (SIM_TAKE_FLOOR - sim) * 3.0
+                        if i in have:
+                            candidates = [
+                                (j, jf, jc, jp + pen) if j == i else (j, jf, jc, jp)
+                                for j, jf, jc, jp in candidates]
+                        else:
+                            candidates.append((i, f, c, pen))
+                        print(f"[tts] off-voice take {takes[i][1].stem}: "
+                              f"similarity {sim:.2f} < {SIM_TAKE_FLOOR}")
                 # Worst first. The budget is four rolls, and taking the first
                 # four in video order spent them on mild early offenders while
                 # a +5 dB cliff at 6:34 waited fifth in line and shipped.
@@ -2135,6 +2207,11 @@ def _ttsapi_synthesize(
                     old_score = dist(f0, cen) + pen
                     new_score = (dist(new_f0, new_cen) + seam_pen(i, fresh)
                                  + _squeal_penalty(fresh, target))
+                    # The fresh sample answers to the same timbre gate: a
+                    # re-roll that is itself off-voice must not win on pitch.
+                    fresh_sim = _speaker_similarity([fresh]).get(str(fresh))
+                    if fresh_sim is not None and fresh_sim < SIM_TAKE_FLOOR:
+                        new_score += (SIM_TAKE_FLOOR - fresh_sim) * 3.0
                     if new_f0 and new_score < old_score:
                         fresh.replace(para_path)
                         print(f"[tts] re-rolled {para_path.stem}: "
@@ -2147,6 +2224,18 @@ def _ttsapi_synthesize(
         except Exception as exc:  # noqa: BLE001
             # Cosmetic pass: never let it cost the run.
             print(f"[tts] outlier re-roll skipped ({exc})")
+
+    # Identity, at window granularity, while the takes are still raw. The
+    # whole-take similarity trigger in phase 2 has the same blindness the
+    # whole-take pitch numbers had: b0086 (Vidit-Mamedyarov) was a robotic
+    # beat the LISTENER confirmed, inside a take whose overall embedding
+    # passed — a few seconds averages out of a minute. Windows do not
+    # average out. This first ran AFTER the seam passes, so its re-rolls
+    # (foreign seeds, stranger baselines) got one hasty flatten instead of
+    # the full treatment below — and those very seams killed all three
+    # Gligoric-Flohr draws. Re-voicing must happen before the seam
+    # machinery, never after it.
+    _reroll_offvoice_takes(takes, fetch)
 
     # --- phase 3: even out the remaining pitch and level ----------------
     # Pitch normalisation, then seam easing. Two *level* treatments were tried
@@ -2162,7 +2251,6 @@ def _ttsapi_synthesize(
     # Closed loop: everything above nudges; this one re-measures with the
     # audit's thresholds and re-synthesizes what nudging could not fix.
     _rescue_stubborn_seams(takes, fetch)
-
     # --- phase 4: align and slice ---------------------------------------
     import wave
     for group, para_path, text in takes:
@@ -2193,6 +2281,206 @@ def _ttsapi_synthesize(
               f"across {total} takes")
     _check_offvoice_beats(lines, clips, out_dir)
     return clips
+
+
+# Window gate. First version used 3.5 s windows on a 2.5 s hop and the audit
+# floor — and passed a render whose beat b0088 then failed the audit at 0.665:
+# a two-second robotic stretch split across two windows dilutes each of them
+# with clean audio, and both cleared the bar. So the windows are short enough
+# that one sits INSIDE a stretch that long (2.0 s, 1.0 s hop keeps every
+# instant covered by two windows), and windows that are mostly silence are
+# not trusted. The window floor sits BELOW the audit's beat floor (0.66 vs
+# 0.68) because the granularities differ: a 2 s window scores lower than the
+# whole beat around it, and extreme-value behaviour over a long take's ~90
+# windows dips clean audio into the 0.66s — the history below is what moved
+# it down from 0.70.
+# Floor placement, measured twice. A window ON the b0088 stretch (listener-
+# confirmed robotic) scores 0.652; the synthetic robotic sample 0.515. But the
+# MINIMUM over a long take's ~90 windows dips into the 0.66s for clean audio —
+# extreme-value behaviour a short test take could not show. At 0.70 the gate
+# fired 8 times in one Gelfand-Anand run, every firing in 0.66-0.69, and every
+# affected beat still audited at >=0.726: all false positives, ~40 minutes of
+# re-roll churn, and the fresh seams they made failed two draws. 0.66 sits
+# under the clean tail and still catches the confirmed-robotic 0.652 class;
+# the audit's beat-level floor (0.68) remains the safety net behind it.
+SIM_WINDOW_S = 2.0
+SIM_WINDOW_HOP_S = 1.0
+SIM_WINDOW_FLOOR = 0.66
+SIM_WINDOW_MIN_VOICED_S = 1.0
+SIM_REROLL_TAKES = 3          # most takes re-rolled per video
+SIM_REROLL_ATTEMPTS = 2       # rolls per take before accepting the least bad
+
+
+def _window_sims(paths: Sequence[Path]) -> Dict[str, Tuple[float, float]]:
+    """path -> (similarity, voiced seconds), via the TTS service.
+
+    Keyed by path rather than positional: a window with too little voiced
+    audio comes back as an error row with no similarity, and a positional
+    list would silently shift every later window onto the wrong offset.
+    """
+    voice = os.getenv("TTS_VOICE", "").strip()
+    if not voice:
+        return {}
+    import urllib.request
+    base = os.getenv("TTS_API_URL", "http://127.0.0.1:8010").rstrip("/")
+    try:
+        body = json.dumps({"voice": voice,
+                           "paths": [str(p) for p in paths]}).encode()
+        req = urllib.request.Request(
+            f"{base}/similarity", data=body,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=300) as r:
+            data = json.loads(r.read().decode())
+        return {r["path"]: (r["similarity"], r.get("voiced_s", 0.0))
+                for r in data.get("results", []) if "similarity" in r}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _worst_window_sim(path: Path, out_dir: Path) -> Optional[Tuple[float, float]]:
+    """(worst similarity, its offset seconds) across sliding windows, or None
+    when the service is unavailable or nothing scored. Windows carrying less
+    than SIM_WINDOW_MIN_VOICED_S of voiced audio are ignored — an embedding of
+    a breath is noise, and a gate fed noise re-rolls at random."""
+    ff = _ffmpeg()
+    if not ff:
+        return None
+    import subprocess
+    import wave as _wave
+    with _wave.open(str(path), "rb") as fh:
+        dur = fh.getnframes() / float(fh.getframerate())
+    cuts, t = [], 0.0
+    while t + SIM_WINDOW_S <= dur or (t == 0.0 and dur > 1.2):
+        cuts.append(t)
+        t += SIM_WINDOW_HOP_S
+    if not cuts:
+        return None
+    tmp: List[Path] = []
+    try:
+        for k, off in enumerate(cuts):
+            w = out_dir / f"{path.stem}.simwin{k}.wav"
+            subprocess.run(
+                [ff, "-y", "-v", "error", "-ss", f"{off:.2f}",
+                 "-t", f"{SIM_WINDOW_S:.2f}", "-i", str(path),
+                 "-c:a", "pcm_s16le", str(w)],
+                check=True, capture_output=True)
+            tmp.append(w)
+        results = _window_sims(tmp)
+        scored = []
+        for k, w in enumerate(tmp):
+            got = results.get(str(w))
+            if got is not None and got[1] >= SIM_WINDOW_MIN_VOICED_S:
+                scored.append((got[0], cuts[k]))
+        if not scored:
+            return None
+        return min(scored)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        for w in tmp:
+            w.unlink(missing_ok=True)
+
+
+def _reroll_offvoice_takes(
+    takes: List[Tuple[List[Dict[str, Any]], Path, str]], fetch
+) -> None:
+    """Replace takes with an off-voice window in them, worst first."""
+    out_dir = takes[0][1].parent if takes else None
+    if out_dir is None:
+        return
+    measured = []
+    for i, (_g, p, _t) in enumerate(takes):
+        worst = _worst_window_sim(p, out_dir)
+        if worst is not None:
+            measured.append((worst[0], worst[1], i))
+    if not measured:
+        return                      # service down; the audit still stands guard
+    bad = sorted((m for m in measured if m[0] < SIM_WINDOW_FLOOR))
+    if not bad:
+        return
+    base_seed = os.getenv("TTS_SEED", "42").strip()
+    for worst, at_s, i in bad[:SIM_REROLL_TAKES]:
+        group, para_path, text = takes[i]
+        print(f"[tts] off-voice window in {para_path.stem} at {at_s:.0f}s "
+              f"(similarity {worst:.2f}) — re-rolling the take")
+        best = (worst, None, _neighbour_seam_pen(takes, i, para_path))
+        for attempt in range(1, SIM_REROLL_ATTEMPTS + 1):
+            fresh = out_dir / f"{para_path.stem}.voiceroll{attempt}.wav"
+            if base_seed not in ("", "-1"):
+                os.environ["TTS_SEED_OVERRIDE"] = str(
+                    int(base_seed) + 7000 + 13 * i + 900 * attempt)
+            try:
+                _fetch_primed(
+                    fetch, text,
+                    _tail_sentence(takes[i - 1][2]) if i else WARMUP_PRIMER,
+                    fresh, f"voice re-roll {para_path.stem} #{attempt}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[tts] voice re-roll failed ({exc})")
+                continue
+            finally:
+                os.environ.pop("TTS_SEED_OVERRIDE", None)
+            got = _worst_window_sim(fresh, out_dir)
+            # A re-roll rides a foreign seed, so its baseline is a stranger to
+            # both neighbours — accepting on similarity alone swapped a robotic
+            # window for a level cliff, and the cliff killed the draw. Gelfand-
+            # Anand's listener-flagged 3:17 seam was into b0032, a take this
+            # gate had re-voiced; the next day's four blocking seams included
+            # b0046 and b0090, both this gate's re-rolls. The seams a candidate
+            # makes are part of its score, in the same units as the window
+            # deficit (audible-seam rule, scaled like dist()).
+            if got is not None:
+                fresh_pen = _neighbour_seam_pen(takes, i, fresh)
+                orig_pen = _neighbour_seam_pen(takes, i, para_path)
+                score = (SIM_WINDOW_FLOOR - got[0]) * 3.0 + fresh_pen
+                best_score = (SIM_WINDOW_FLOOR - best[0]) * 3.0 + (
+                    orig_pen if best[1] is None else best[2])
+                if score < best_score:
+                    if best[1] is not None:
+                        best[1].unlink(missing_ok=True)
+                    best = (got[0], fresh, fresh_pen)
+                else:
+                    fresh.unlink(missing_ok=True)
+            else:
+                fresh.unlink(missing_ok=True)
+            if best[0] >= SIM_WINDOW_FLOOR and best[2] <= 0.05:
+                break
+        if best[1] is not None:
+            best[1].replace(para_path)
+            state = "clean" if best[0] >= SIM_WINDOW_FLOOR else "least bad kept"
+            print(f"[tts] re-voiced {para_path.stem}: worst window "
+                  f"{worst:.2f} -> {best[0]:.2f}, seam pen {best[2]:.2f} ({state})")
+        else:
+            print(f"[tts] no re-roll beat {para_path.stem}'s original "
+                  f"({worst:.2f}); the audit will judge it")
+    # No seam pass here: this runs before phases 3-4, so any fresh takes get
+    # the full flatten/ease/rescue treatment, not a hasty local patch.
+
+
+def _neighbour_seam_pen(
+    takes: List[Tuple[List[Dict[str, Any]], Path, str]], i: int, path: Path
+) -> float:
+    """How badly ``path`` would seam against take i's neighbours.
+
+    Zero when both joins are comfortably inaudible; grows in the same units
+    the audible-seam rule speaks (Hz over 20, dB over 3), so it can be summed
+    with a similarity deficit."""
+    pen = 0.0
+    for head in (True, False):
+        other_i = i - 1 if head else i + 1
+        if other_i < 0 or other_i >= len(takes):
+            continue
+        other = takes[other_i][1]
+        if head:
+            tail_f0, head_f0 = _median_f0(other, -1.2), _median_f0(path, 0.0, 1.2)
+            tail_lv, head_lv = _level_db(other, -1.5), _level_db(path, 0.0, 1.5)
+        else:
+            tail_f0, head_f0 = _median_f0(path, -1.2), _median_f0(other, 0.0, 1.2)
+            tail_lv, head_lv = _level_db(path, -1.5), _level_db(other, 0.0, 1.5)
+        if tail_f0 and head_f0:
+            pen += max(0.0, abs(head_f0 - tail_f0) - 20) / 150
+        if tail_lv is not None and head_lv is not None:
+            pen += max(0.0, abs(head_lv - tail_lv) - 3.0) / 8
+    return pen
 
 
 def _check_offvoice_beats(

@@ -829,6 +829,26 @@ def main() -> int:
     # --- 5) the slow channel's cut of the same game ---------------------
     if not args.no_slowplay:
         _render_slowplay(Path(args.pgn))
+
+    # --- 6) does this game hold a Short? --------------------------------
+    # Verdict only — building the vertical is its own command
+    # (build_short.py), run once a human has agreed the moment is worth it.
+    # But the DECISION belongs here, printed with every build, so no game
+    # with a wow moment slips past unnoticed and no ordinary game tempts
+    # anyone into dressing a mistake up as drama.
+    try:
+        from build_short import find_wow  # noqa: PLC0415
+        wow = find_wow(script.get("beats") or [])
+        if wow:
+            streak = len(wow.get("streak") or [])
+            extra = f", streak of {streak}" if streak > 1 else ""
+            print(f"[short] wow moment found ({wow['kind']}{extra}) — this "
+                  "game QUALIFIES for a Short: build_short.py --pgn "
+                  f"{args.pgn}")
+        else:
+            print("[short] no wow moment — no Short from this game")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] short check skipped ({exc})")
     return 0
 
 

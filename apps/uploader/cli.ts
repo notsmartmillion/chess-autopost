@@ -13,9 +13,10 @@ import dotenv from 'dotenv';
 dotenv.config({ path: path.resolve(process.cwd(), '..', '..', '.env') });
 import { Command } from 'commander';
 import fs from 'fs/promises';
-import { uploadVideo, getVideoInfo, updateVideoMetadata, listVideos, verifyChannel, fileInPlaylists } from './youtube_client';
+import { uploadVideo, getVideoInfo, updateVideoMetadata, listVideos, verifyChannel, fileInPlaylists, useChannelProfile } from './youtube_client';
 import type { UploadOptions } from './youtube_client';
-import { generateMetadata, generateShortMetadata } from './metadata';
+import { generateMetadata, generateShortMetadata, generateSlowPlayMetadata } from './metadata';
+import type { SlowPlayProps } from './metadata';
 import { generateChaptersText } from './chapters';
 import type { Script } from '../renderer/src/types/script';
 
@@ -139,6 +140,78 @@ https://youtu.be/${v.id.videoId}`);
 
     } catch (error) {
       console.error('Upload failed:', error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('upload-slowplay')
+  .description('Upload a slow-play cut to the slow-play channel (a separate OAuth profile)')
+  .requiredOption('-v, --video <file>', 'Slow-play mp4')
+  .requiredOption('--props <file>', 'props.json written by build_slowplay.py')
+  .option('-T, --thumb <file>', 'Thumbnail file path')
+  .option('-p, --privacy <status>', 'Privacy status', 'unlisted')
+  .option('--channel <profile>', 'Channel profile (env suffix)', 'slowplay')
+  .option('--full-url <url>', 'Narrated analysis on the main channel, linked in the description')
+  .option('--dry-run', 'Show what would be uploaded without actually uploading')
+  .option('--result-json <file>', 'Write {videoId,url,status,title} here on success')
+  .action(async (options) => {
+    try {
+      // The profile is selected BEFORE any API call; every call after this
+      // (verify, upload, playlists) runs against the slow-play channel's token.
+      useChannelProfile(options.channel);
+
+      const props: SlowPlayProps = JSON.parse(await fs.readFile(options.props, 'utf-8'));
+      const metadata = generateSlowPlayMetadata(props, options.fullUrl);
+      const uploadOptions: UploadOptions = {
+        path: options.video,
+        title: metadata.title,
+        description: metadata.description,
+        tags: metadata.tags,
+        privacy: options.privacy as 'public' | 'unlisted' | 'private',
+        thumbPath: options.thumb,
+        categoryId: metadata.categoryId,
+      };
+
+      if (options.dryRun) {
+        await verifyChannel();
+        console.log('\n=== DRY RUN (slow-play) - Would upload ===');
+        console.log('Title:', uploadOptions.title);
+        console.log('Description:', uploadOptions.description);
+        console.log('Tags:', uploadOptions.tags.join(', '));
+        console.log('Privacy:', uploadOptions.privacy);
+        console.log('Video file:', uploadOptions.path);
+        console.log('Thumbnail:', uploadOptions.thumbPath || 'None');
+        return;
+      }
+
+      console.log(`Uploading to the "${options.channel}" channel...`);
+      const result = await uploadVideo(uploadOptions);
+      console.log('\n=== Upload Complete ===');
+      console.log('Video ID:', result.videoId);
+      console.log('URL:', result.url);
+
+      // Player playlists on the slow-play channel too — same names, its own
+      // playlists, created on first use like the main channel's.
+      const names = [props.game.white, props.game.black].filter(Boolean);
+      if (result.videoId && names.length) {
+        await fileInPlaylists(result.videoId, names);
+      }
+
+      if (options.resultJson) {
+        await fs.writeFile(
+          options.resultJson,
+          JSON.stringify(
+            { videoId: result.videoId, url: result.url, status: result.status, title: uploadOptions.title },
+            null,
+            2
+          ),
+          'utf-8'
+        );
+        console.log('Result written to:', options.resultJson);
+      }
+    } catch (error) {
+      console.error('Slow-play upload failed:', error);
       process.exit(1);
     }
   });

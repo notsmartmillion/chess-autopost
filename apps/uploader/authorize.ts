@@ -50,7 +50,22 @@ const SCOPES = [
 const PORT = 8790;
 const REDIRECT = `http://localhost:${PORT}/oauth2callback`;
 
+// `npm run authorize -- --channel slowplay` authorises a SECOND channel: the
+// token is written as GOOGLE_REFRESH_TOKEN_SLOWPLAY, leaving the main
+// channel's token untouched. At Google's account chooser, pick the channel
+// this profile is for — the uploader verifies the id before every post.
+function profileArg(): string {
+  const i = process.argv.indexOf('--channel');
+  const raw = i >= 0 ? process.argv[i + 1] ?? '' : '';
+  if (raw && !/^[a-z][a-z0-9_]*$/i.test(raw)) {
+    throw new Error(`--channel must be a simple name (letters, digits, _), got "${raw}"`);
+  }
+  return raw.trim().toUpperCase();
+}
+
 async function main(): Promise<number> {
+  const profile = profileArg();
+  const suffix = profile ? `_${profile}` : '';
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
@@ -117,14 +132,34 @@ async function main(): Promise<number> {
   // standing credential for the channel; echoing it to a terminal leaves it
   // in scrollback and in any log that happens to be capturing stdout.
   const envPath = ENV_PATH;
+  const tokenVar = `GOOGLE_REFRESH_TOKEN${suffix}`;
   try {
     const existing = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
-    const line = `GOOGLE_REFRESH_TOKEN=${tokens.refresh_token}`;
-    const next = /^GOOGLE_REFRESH_TOKEN=.*$/m.test(existing)
-      ? existing.replace(/^GOOGLE_REFRESH_TOKEN=.*$/m, line)
+    const line = `${tokenVar}=${tokens.refresh_token}`;
+    const re = new RegExp(`^${tokenVar}=.*$`, 'm');
+    const next = re.test(existing)
+      ? existing.replace(re, line)
       : existing.replace(/\s*$/, '\n') + line + '\n';
     fs.writeFileSync(envPath, next, 'utf-8');
-    console.log(`\nAuthorised. Refresh token written to ${envPath}\n`);
+    console.log(`\nAuthorised. Refresh token written to ${envPath} as ${tokenVar}\n`);
+
+    // Report which channel this token actually controls, so the id can be
+    // pinned in .env deliberately. Not written automatically: the whole
+    // point of YOUTUBE_CHANNEL_ID is to catch the wrong pick at the account
+    // chooser, and a value copied from the token cannot catch anything.
+    try {
+      oauth2Client.setCredentials(tokens);
+      const yt = google.youtube({ version: 'v3', auth: oauth2Client });
+      const res = await yt.channels.list({ part: ['snippet'], mine: true });
+      const ch = res.data.items?.[0];
+      if (ch?.id) {
+        const idVar = `YOUTUBE_CHANNEL_ID${suffix}`;
+        console.log(`This token controls: "${ch.snippet?.title}" (${ch.id})`);
+        console.log(`If that is the intended channel, add to .env:\n  ${idVar}=${ch.id}\n`);
+      }
+    } catch {
+      // informational only
+    }
   } catch (e) {
     console.error('\nAuthorised, but .env could not be written:', e);
     console.error('Add the refresh token by hand — it is:');

@@ -340,3 +340,86 @@ export function generateShortMetadata(script: Script, fullUrl?: string): VideoMe
     categoryId: getCategoryId(),
   };
 }
+
+/** The slow-play composition's props file (build_slowplay.py writes it). */
+export interface SlowPlayProps {
+  game: {
+    white: string;
+    black: string;
+    whiteElo?: string | null;
+    blackElo?: string | null;
+    result?: string | null;
+    event?: string | null;
+    year?: string | null;
+    plies: { san: string }[];
+  };
+  secondsPerMove?: number;
+}
+
+const RESULT_LINE: Record<string, string> = {
+  '1-0': 'White wins',
+  '0-1': 'Black wins',
+  '1/2-1/2': 'Draw',
+};
+
+/**
+ * Metadata for the slow-play channel: the bare game, no commentary.
+ *
+ * Deliberately plain — this channel's viewer wants the game, not a story —
+ * and it carries one link back to the narrated analysis on the main channel
+ * when that video exists, which is the whole cross-promotion loop.
+ */
+export function generateSlowPlayMetadata(
+  props: SlowPlayProps,
+  fullUrl?: string,
+  mainChannelName = 'Nocturne Chess'
+): VideoMetadata {
+  const g = props.game;
+  const white = clean(g.white) ?? 'White';
+  const black = clean(g.black) ?? 'Black';
+  const rawEvent = clean(g.event);
+  const year = clean(g.year ?? undefined);
+  // "AVRO" + 1938 -> "AVRO 1938"; an event that already names its year is
+  // left alone, and a year alone still dates the game.
+  const event = rawEvent && year && !rawEvent.includes(year)
+    ? `${rawEvent} ${year}`
+    : rawEvent ?? year;
+  const result = clean(g.result);
+  const moves = Math.ceil((g.plies?.length ?? 0) / 2);
+  const spm = props.secondsPerMove ?? 4;
+
+  let title = `${white} vs ${black}${event ? ` | ${event}` : ''} | Full Game, No Commentary`;
+  if (title.length > 100) title = `${white} vs ${black} | Full Game, No Commentary`;
+  if (title.length > 100) title = `${white} vs ${black} | Full Game`;
+
+  const blocks: string[] = [];
+  blocks.push(
+    `${white} (White) vs ${black} (Black)${event ? `\n${event}` : ''}` +
+      (result ? `\nResult: ${result}${RESULT_LINE[result] ? ` · ${RESULT_LINE[result]}` : ''}` : '') +
+      `\n${moves} moves, one move every ${spm} seconds. No commentary — just the game.`
+  );
+  if (fullUrl) {
+    blocks.push(`Narrated analysis of this game, move by move, on ${mainChannelName}:\n${fullUrl}`);
+  }
+  blocks.push(
+    'Classic and modern chess games replayed at a calm pace, with captured ' +
+      'pieces and material balance shown. Play along, pause, and guess the next move.'
+  );
+
+  const surnames = [white, black]
+    .map((n) => n.split(' ').pop() ?? '')
+    .filter((s) => /^[A-Za-z]{3,}$/.test(s));
+  blocks.push(['#Chess', '#ChessGame', ...surnames.map((s) => `#${s}`)].join(' '));
+
+  const tags = [
+    'chess', 'chess game', 'full game', 'no commentary', 'chess replay',
+    'slow chess', white, black, event ?? '',
+  ].filter((t) => t && t.length <= 30);
+
+  return {
+    title,
+    description: blocks.join('\n\n'),
+    tags: [...new Set(tags)],
+    categoryId: getCategoryId(),
+  };
+}

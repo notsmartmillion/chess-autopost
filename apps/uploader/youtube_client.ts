@@ -26,15 +26,42 @@ export interface UploadResult {
 }
 
 /**
+ * Channel profiles: one OAuth client, several channels.
+ *
+ * The refresh token and the expected channel id for a profile live in env
+ * vars suffixed with the profile's name — GOOGLE_REFRESH_TOKEN_SLOWPLAY and
+ * YOUTUBE_CHANNEL_ID_SLOWPLAY for the slow-play channel. The default profile
+ * is the bare pair, which is the main channel; nothing about existing calls
+ * changes. `npm run authorize -- --channel slowplay` mints the suffixed token.
+ */
+let activeProfile = '';
+
+export function useChannelProfile(name?: string | null): void {
+  activeProfile = (name ?? '').trim().toUpperCase();
+}
+
+export function activeChannelProfile(): string {
+  return activeProfile.toLowerCase();
+}
+
+function profileEnv(base: string): string | undefined {
+  return activeProfile ? process.env[`${base}_${activeProfile}`] : process.env[base];
+}
+
+/**
  * Initialize YouTube API client with OAuth2
  */
 function getYouTubeClient() {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
-  
+  const refreshToken = profileEnv('GOOGLE_REFRESH_TOKEN');
+
   if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error('Missing Google OAuth credentials. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN');
+    const tokenVar = activeProfile ? `GOOGLE_REFRESH_TOKEN_${activeProfile}` : 'GOOGLE_REFRESH_TOKEN';
+    throw new Error(
+      `Missing Google OAuth credentials. Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and ${tokenVar}` +
+        (activeProfile ? ` (npm run authorize -- --channel ${activeProfile.toLowerCase()})` : '')
+    );
   }
   
   const oauth2Client = new google.auth.OAuth2(clientId, clientSecret);
@@ -58,15 +85,37 @@ function getYouTubeClient() {
  */
 export async function verifyChannel(): Promise<void> {
   const youtube = getYouTubeClient();
-  const expected = process.env.YOUTUBE_CHANNEL_ID?.trim();
+  const idVar = activeProfile ? `YOUTUBE_CHANNEL_ID_${activeProfile}` : 'YOUTUBE_CHANNEL_ID';
+  const expected = profileEnv('YOUTUBE_CHANNEL_ID')?.trim();
   const res = await youtube.channels.list({ part: ['snippet'], mine: true });
   const channel = res.data.items?.[0];
   const id = channel?.id ?? '(none)';
   const title = channel?.snippet?.title ?? '(unknown)';
 
+  // A secondary profile is held to a stricter standard than the main one:
+  // its channel id MUST be configured, and it MUST differ from the main
+  // channel's. A slow-play replay landing on Nocturne Chess would be the
+  // worst possible outcome of this feature, and the only thing standing
+  // between the two channels is which refresh token was pasted where.
+  if (activeProfile) {
+    if (!expected) {
+      throw new Error(
+        `Refusing to upload: ${idVar} is not set. A secondary channel profile ` +
+          'must name its channel so a token for the wrong channel cannot post there.'
+      );
+    }
+    const main = process.env.YOUTUBE_CHANNEL_ID?.trim();
+    if (main && expected === main) {
+      throw new Error(
+        `Refusing to upload: ${idVar} equals YOUTUBE_CHANNEL_ID (${main}) — the ` +
+          `"${activeProfile.toLowerCase()}" profile would post onto the main channel.`
+      );
+    }
+  }
+
   if (!expected) {
     console.warn(
-      `Uploading to "${title}" (${id}). Set YOUTUBE_CHANNEL_ID in .env to ` +
+      `Uploading to "${title}" (${id}). Set ${idVar} in .env to ` +
         'have this verified rather than merely reported.'
     );
     return;
@@ -74,8 +123,9 @@ export async function verifyChannel(): Promise<void> {
   if (id !== expected) {
     throw new Error(
       `Refusing to upload: this token controls "${title}" (${id}), but ` +
-        `YOUTUBE_CHANNEL_ID is ${expected}. Re-run "npm run authorize" and ` +
-        'pick the right channel at the Google account chooser.'
+        `${idVar} is ${expected}. Re-run "npm run authorize` +
+        (activeProfile ? ` -- --channel ${activeProfile.toLowerCase()}` : '') +
+        '" and pick the right channel at the Google account chooser.'
     );
   }
   console.log(`Channel verified: ${title} (${id})`);

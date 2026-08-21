@@ -812,6 +812,32 @@ def main() -> int:
             if result.get("url"):
                 log(f"published: {result['url']}")
             notify(f"Chess autopost: uploaded daily video ({pgn_path.name}).")
+
+            # 4) The slow-play channel gets the same game, linked back to the
+            # narration. Only once its credentials exist, only after the main
+            # upload succeeded (the link must be real), and never fatally —
+            # the main channel's day is done whatever happens here.
+            try:
+                import build_slowplay  # noqa: PLC0415
+                if build_slowplay.have_slowplay_creds():
+                    sp_mp4, sp_props = build_slowplay.slowplay_paths(pgn_path)
+                    if sp_mp4.exists() and sp_props.exists():
+                        sp = build_slowplay.upload(
+                            sp_mp4, sp_props, args.privacy, result.get("url"))
+                        entry["slowplay"] = {"videoId": sp.get("videoId"),
+                                             "url": sp.get("url"),
+                                             "title": sp.get("title")}
+                        record_publication(entry)
+                        if sp.get("url"):
+                            log(f"slow-play posted: {sp['url']}")
+                    else:
+                        log("slow-play upload skipped: no cut was rendered for this game")
+                else:
+                    log("slow-play upload skipped: GOOGLE_REFRESH_TOKEN_SLOWPLAY / "
+                        "YOUTUBE_CHANNEL_ID_SLOWPLAY not set")
+            except Exception as exc:  # noqa: BLE001
+                log(f"slow-play upload failed ({exc}); the main upload stands")
+                notify(f"Chess autopost: slow-play upload FAILED ({pgn_path.name}).")
         except subprocess.CalledProcessError as e:
             log(f"ERROR: upload failed with exit code {e.returncode}")
             # Record the failure so the archived video can be retried later.

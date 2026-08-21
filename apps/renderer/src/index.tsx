@@ -9,7 +9,7 @@ import {
   SLOWPLAY_DEFAULTS,
   SlowPlayGame,
 } from './compositions/ChessSlowPlay';
-import {ChannelWatermark, ChannelBanner} from './compositions/ChannelArt';
+import {ChannelWatermark, ChannelBanner, JtmAvatar, JtmBanner} from './compositions/ChannelArt';
 import type {Script} from './types/script';
 
 const FPS = 30;
@@ -112,6 +112,22 @@ registerRoot(() => {
       <Composition
         id="ChannelBanner"
         component={ChannelBanner}
+        durationInFrames={1}
+        fps={FPS}
+        width={2048}
+        height={1152}
+      />
+      <Composition
+        id="JtmAvatar"
+        component={JtmAvatar}
+        durationInFrames={1}
+        fps={FPS}
+        width={800}
+        height={800}
+      />
+      <Composition
+        id="JtmBanner"
+        component={JtmBanner}
         durationInFrames={1}
         fps={FPS}
         width={2048}

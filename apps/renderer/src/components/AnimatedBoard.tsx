@@ -37,6 +37,8 @@ export interface AnimatedBoardProps {
   /** Move-quality badge pinned to the destination square, e.g. "!!" */
   badge?: { square: string; symbol: string; color: string } | null;
   style?: React.CSSProperties;
+  /** Square colours; defaults to the narrated channel's blue-grey board. */
+  squareColors?: { light: string; dark: string };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -262,9 +264,12 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
   showCoordinates = true,
   badge = null,
   style = {},
+  squareColors,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
+  const lightSquare = squareColors?.light ?? LIGHT_SQUARE;
+  const darkSquare = squareColors?.dark ?? DARK_SQUARE;
 
   const squareSize = size / 8;
   const pieceSize = squareSize * 0.88;
@@ -475,7 +480,7 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
               top: cell.y,
               width: squareSize,
               height: squareSize,
-              backgroundColor: cell.light ? LIGHT_SQUARE : DARK_SQUARE,
+              backgroundColor: cell.light ? lightSquare : darkSquare,
             }}
           >
             {showCoordinates && cell.col === 0 && (
@@ -487,7 +492,7 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
                   fontSize: coordFontSize,
                   lineHeight: 1,
                   fontWeight: 700,
-                  color: cell.light ? DARK_SQUARE : LIGHT_SQUARE,
+                  color: cell.light ? darkSquare : lightSquare,
                   opacity: 0.9,
                   userSelect: 'none',
                 }}
@@ -504,7 +509,7 @@ export const AnimatedBoard: React.FC<AnimatedBoardProps> = ({
                   fontSize: coordFontSize,
                   lineHeight: 1,
                   fontWeight: 700,
-                  color: cell.light ? DARK_SQUARE : LIGHT_SQUARE,
+                  color: cell.light ? darkSquare : lightSquare,
                   opacity: 0.9,
                   userSelect: 'none',
                 }}

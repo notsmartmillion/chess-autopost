@@ -61,6 +61,15 @@ export type ChessSlowPlayProps = {
 
 export const SLOWPLAY_DEFAULTS = {secondsPerMove: 4, introSeconds: 3, outroSeconds: 6};
 
+// This channel's own board. Nocturne's cool blue-grey squares belong to the
+// narrated videos; the slow channel is a different place, with the classic
+// warm wood board every club player knows, on a dark walnut ground. Higher
+// contrast between the two square tones, too — the request was a clearer
+// pattern between light and dark, and this pair is the one chess has settled
+// on for exactly that reason.
+export const SLOWPLAY_SQUARES = {light: '#f0d9b5', dark: '#b58863'};
+export const SLOWPLAY_BG = '#262421';
+
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 /** Captured sprites read best grouped by kind, heaviest last (chess.com's order). */
@@ -178,9 +187,9 @@ export const ChessSlowPlay: React.FC<ChessSlowPlayProps> = ({
   return (
     <AbsoluteFill
       style={{
-        // Lighter than the narrated build's bg0 on purpose: black captured
-        // sprites were unreadable against #0b0e13.
-        background: '#1d2430',
+        // The channel's walnut ground (see SLOWPLAY_BG); lighter than the
+        // narrated build's bg0 so black captured sprites stay readable.
+        background: SLOWPLAY_BG,
         fontFamily: 'Inter, "Segoe UI", system-ui, sans-serif',
       }}
     >
@@ -200,6 +209,7 @@ export const ChessSlowPlay: React.FC<ChessSlowPlayProps> = ({
           size={BOARD}
           checkSquare={ply?.checkSquare ?? null}
           showCoordinates
+          squareColors={SLOWPLAY_SQUARES}
         />
       </div>
 

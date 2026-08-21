@@ -884,7 +884,13 @@ def check_voice_identity(script: Dict[str, Any], manifest: Dict[str, Any],
         return                                     # no local profile to compare
     beats = script.get("beats") or []
     clips = manifest.get("clips") or {}
-    voice = os.getenv("TTS_VOICE", "chess_host").strip() or "chess_host"
+    # The manifest records which profile actually spoke; the env fallback is
+    # for manifests from before it did. A standalone audit run has no .env
+    # loaded, and this check silently compared a render against the WRONG
+    # reference (chess_host for an asmr_02 render) — it passed only because
+    # the two profiles are close.
+    voice = (manifest.get("voice")
+             or os.getenv("TTS_VOICE", "chess_host")).strip() or "chess_host"
 
     order, paths = [], []
     for beat in beats:
